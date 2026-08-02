@@ -1,0 +1,14 @@
+{
+  "name": "utlob-sanaii-api",
+  "version": "0.1.0",
+  "description": "سكيلتون Backend شغال لتطبيق اطلب صنايعي — يعمل فورًا بدون npm install (Node built-ins بس)، وجاهز للترقية لـ Postgres/Redis في الإنتاج.",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}

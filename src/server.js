@@ -1,0 +1,88 @@
+// src/server.js
+//
+// سيرفر HTTP بسيط (بدون Express) عشان المشروع يشتغل بـ Node built-ins بس.
+// لو حابب تنتقل لـ Express لاحقًا، الـ route handlers في routes/*.js
+// مكتوبة بشكل مستقل عن الـ HTTP layer (بتاخد body/query وترجع {status,data})
+// فسهل توصلها بأي framework.
+
+const http = require("node:http");
+const { URL } = require("node:url");
+const { sendJson, readJsonBody } = require("./utils/helpers");
+
+const auth = require("./routes/auth");
+const orders = require("./routes/orders");
+
+const PORT = process.env.PORT || 3000;
+
+// [regex, method] -> handler(req, res, body, ...params, query)
+const routes = [
+  { method: "POST", pattern: /^\/auth\/otp$/, handler: (req, res, body) => auth.requestOtp(req, res, body) },
+  { method: "POST", pattern: /^\/auth\/verify$/, handler: (req, res, body) => auth.verifyOtp(req, res, body) },
+  { method: "POST", pattern: /^\/auth\/refresh$/, handler: (req, res, body) => auth.refresh(req, res, body) },
+  { method: "POST", pattern: /^\/auth\/logout$/, handler: (req, res, body) => auth.logout(req, res, body) },
+  { method: "POST", pattern: /^\/auth\/switch-mode$/, handler: (req, res, body) => auth.switchMode(req, res, body) },
+
+  { method: "GET", pattern: /^\/categories$/, handler: (req) => orders.listCategories(req) },
+  { method: "GET", pattern: /^\/providers\/nearby$/, handler: (req, res, body, query) => orders.nearbyProviders(req, query) },
+
+  { method: "POST", pattern: /^\/orders$/, handler: (req, res, body) => orders.createOrder(req, res, body) },
+  { method: "GET", pattern: /^\/orders$/, handler: (req, res, body, query) => orders.listOrders(req, query) },
+  {
+    method: "PATCH",
+    pattern: /^\/orders\/([^/]+)\/accept$/,
+    handler: (req, res, body, query, id) => orders.acceptOrder(req, res, body, id),
+  },
+  {
+    method: "PATCH",
+    pattern: /^\/orders\/([^/]+)\/status$/,
+    handler: (req, res, body, query, id) => orders.updateStatus(req, res, body, id),
+  },
+  {
+    method: "GET",
+    pattern: /^\/orders\/([^/]+)$/,
+    handler: (req, res, body, query, id) => orders.getOrder(req, res, body, id),
+  },
+];
+
+const server = http.createServer(async (req, res) => {
+  // CORS: مطلوب عشان تطبيق Flutter Web (شغال على Chrome من origin مختلف
+  // زي localhost:xxxxx) يقدر يكلم السيرفر ده على localhost:3000. تطبيق
+  // الموبايل (أندرويد/آيفون) مش محتاج الإعداد ده أصلًا لأن قيود CORS
+  // بتاعة المتصفحات بس.
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    return res.end();
+  }
+
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const query = Object.fromEntries(url.searchParams);
+
+  if (req.method === "GET" && url.pathname === "/health") {
+    return sendJson(res, 200, { status: "ok", time: new Date().toISOString() });
+  }
+
+  const match = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
+  if (!match) {
+    return sendJson(res, 404, { error: "not_found", path: url.pathname });
+  }
+
+  try {
+    const body = ["POST", "PATCH", "PUT"].includes(req.method) ? await readJsonBody(req) : {};
+    const routeParams = match.pattern.exec(url.pathname).slice(1); // params زي :id
+    const { status, data } = await match.handler(req, res, body, query, ...routeParams);
+    sendJson(res, status, data);
+  } catch (err) {
+    const statusCode = err.statusCode || (err.message === "invalid_json" ? 400 : 500);
+    if (statusCode === 500) console.error(err);
+    sendJson(res, statusCode, { error: err.message || "internal_error" });
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`🚀 utlob-sanaii-api شغال على http://localhost:${PORT}`);
+  console.log(`   جرّب: curl http://localhost:${PORT}/health`);
+});
