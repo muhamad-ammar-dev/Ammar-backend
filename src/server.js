@@ -27,6 +27,12 @@ const routes = [
 
   { method: "POST", pattern: /^\/orders$/, handler: (req, res, body) => orders.createOrder(req, res, body) },
   { method: "GET", pattern: /^\/orders$/, handler: (req, res, body, query) => orders.listOrders(req, query) },
+  { method: "GET", pattern: /^\/orders\/available$/, handler: (req) => orders.availableOrders(req) },
+  {
+    method: "PATCH",
+    pattern: /^\/providers\/me\/availability$/,
+    handler: (req, res, body) => orders.updateAvailability(req, res, body),
+  },
   {
     method: "PATCH",
     pattern: /^\/orders\/([^/]+)\/accept$/,

@@ -217,6 +217,64 @@ async function listOrders(req, query) {
   return { status: 200, data: { orders, total: orders.length } };
 }
 
+// ---------------------------------------------------------------
+// GET /orders/available — الطلبات المعلّقة في تخصصات الصنايعي الحالي
+// ---------------------------------------------------------------
+async function availableOrders(req) {
+  const payload = requireAuth(req);
+  requireUserType(payload, ["provider", "both"]);
+
+  const provider = db.get("SELECT * FROM provider_profiles WHERE user_id = ?", [payload.sub]);
+  if (!provider) return { status: 403, data: { error: "not_a_provider" } };
+
+  const orders = db.all(
+    `SELECT o.*, u.name AS client_name
+     FROM orders o
+     JOIN users u ON u.id = o.client_id
+     WHERE o.status = 'pending'
+       AND o.category_id IN (
+         SELECT category_id FROM provider_categories WHERE provider_id = ?
+       )
+     ORDER BY o.created_at DESC
+     LIMIT 20`,
+    [provider.id]
+  );
+
+  return { status: 200, data: { orders } };
+}
+
+// ---------------------------------------------------------------
+// PATCH /providers/me/availability — تفعيل/إلغاء "متاح الآن" + الموقع + التخصصات
+// ---------------------------------------------------------------
+async function updateAvailability(req, res, body) {
+  const payload = requireAuth(req);
+  requireUserType(payload, ["provider", "both"]);
+
+  const provider = db.get("SELECT * FROM provider_profiles WHERE user_id = ?", [payload.sub]);
+  if (!provider) return { status: 403, data: { error: "not_a_provider" } };
+
+  const { is_available, lat, lng, category_ids } = body;
+
+  db.run(
+    `UPDATE provider_profiles
+     SET is_available = ?, current_lat = COALESCE(?, current_lat), current_lng = COALESCE(?, current_lng),
+         location_updated_at = datetime('now')
+     WHERE id = ?`,
+    [is_available ? 1 : 0, lat ?? null, lng ?? null, provider.id]
+  );
+
+  if (Array.isArray(category_ids)) {
+    db.run("DELETE FROM provider_categories WHERE provider_id = ?", [provider.id]);
+    const insertCat = "INSERT INTO provider_categories (provider_id, category_id) VALUES (?, ?)";
+    for (const categoryId of category_ids) {
+      db.run(insertCat, [provider.id, categoryId]);
+    }
+  }
+
+  const updated = db.get("SELECT * FROM provider_profiles WHERE id = ?", [provider.id]);
+  return { status: 200, data: updated };
+}
+
 module.exports = {
   listCategories,
   nearbyProviders,
@@ -225,4 +283,6 @@ module.exports = {
   updateStatus,
   getOrder,
   listOrders,
+  availableOrders,
+  updateAvailability,
 };

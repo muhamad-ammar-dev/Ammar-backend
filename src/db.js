@@ -32,6 +32,7 @@ db.exec(`
     is_available          INTEGER NOT NULL DEFAULT 0,
     current_lat           REAL,
     current_lng           REAL,
+    location_updated_at   TEXT,
     rating_avg             REAL NOT NULL DEFAULT 0,
     rating_count            INTEGER NOT NULL DEFAULT 0,
     jobs_completed         INTEGER NOT NULL DEFAULT 0,
