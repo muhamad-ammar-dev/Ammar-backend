@@ -1,6 +1,6 @@
 // src/seed.js
 //
-// بيانات تجريبية: بيزرع ٤ صنايعية بمواقع قريبة من مدينة نصر، القاهرة،
+// بيانات تجريبية: بيزرع ٤ صنايعية بمواقع قريبة من موقعك الحالي،
 // عشان endpoint /providers/nearby يرجع نتائج فعلية وانت بتجرب التطبيق.
 //
 // التشغيل:  node src/seed.js
@@ -9,10 +9,10 @@ const db = require("./db");
 const { uuid } = require("./utils/helpers");
 
 const sample = [
-  { name: "محمود عبد الله", phone: "+201011111111", cat: 1, lat: 30.0561, lng: 31.3396, rating: 4.8, jobs: 210 },
-  { name: "أحمد سيد",      phone: "+201022222222", cat: 1, lat: 30.0601, lng: 31.3450, rating: 4.6, jobs: 150 },
-  { name: "كريم فتحي",     phone: "+201033333333", cat: 2, lat: 30.0530, lng: 31.3410, rating: 4.9, jobs: 300 },
-  { name: "إسلام محمد",    phone: "+201044444444", cat: 3, lat: 30.0580, lng: 31.3370, rating: 4.5, jobs: 90  },
+  { name: "محمود عبد الله", phone: "+201011111111", cat: 1, lat: 31.2630, lng: 30.5150, rating: 4.8, jobs: 210 },
+  { name: "أحمد سيد",      phone: "+201022222222", cat: 1, lat: 31.2670, lng: 30.5200, rating: 4.6, jobs: 150 },
+  { name: "كريم فتحي",     phone: "+201033333333", cat: 2, lat: 31.2600, lng: 30.5100, rating: 4.9, jobs: 300 },
+  { name: "إسلام محمد",    phone: "+201044444444", cat: 3, lat: 31.2650, lng: 30.5180, rating: 4.5, jobs: 90  },
 ];
 
 for (const p of sample) {
@@ -36,6 +36,13 @@ for (const p of sample) {
       [profileId, user.id, p.lat, p.lng, p.rating, p.jobs]
     );
     profile = db.get("SELECT * FROM provider_profiles WHERE id = ?", [profileId]);
+  } else {
+    // لو الصنايعي موجود بالفعل (من تشغيل سابق)، نحدّث موقعه للإحداثيات الجديدة
+    db.run("UPDATE provider_profiles SET current_lat = ?, current_lng = ?, is_available = 1 WHERE id = ?", [
+      p.lat,
+      p.lng,
+      profile.id,
+    ]);
   }
 
   db.run("INSERT OR IGNORE INTO provider_categories (provider_id, category_id) VALUES (?, ?)", [

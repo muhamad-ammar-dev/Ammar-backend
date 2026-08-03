@@ -8,6 +8,10 @@
 const http = require("node:http");
 const { URL } = require("node:url");
 const { sendJson, readJsonBody } = require("./utils/helpers");
+const { attachWebSocketServer } = require("./ws/server");
+const hub = require("./ws/hub");
+const jwt = require("./utils/jwt");
+const db = require("./db");
 
 const auth = require("./routes/auth");
 const orders = require("./routes/orders");
@@ -47,6 +51,16 @@ const routes = [
     method: "GET",
     pattern: /^\/orders\/([^/]+)$/,
     handler: (req, res, body, query, id) => orders.getOrder(req, res, body, id),
+  },
+  {
+    method: "POST",
+    pattern: /^\/orders\/([^/]+)\/rate$/,
+    handler: (req, res, body, query, id) => orders.rateOrder(req, res, body, id),
+  },
+  {
+    method: "POST",
+    pattern: /^\/providers\/me\/location$/,
+    handler: (req, res, body) => orders.updateLiveLocation(req, res, body),
   },
 ];
 
@@ -91,4 +105,61 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`🚀 utlob-sanaii-api شغال على http://localhost:${PORT}`);
   console.log(`   جرّب: curl http://localhost:${PORT}/health`);
+  console.log(`   WebSocket تتبع لحظي على ws://localhost:${PORT}/ws`);
+});
+
+// ---------------------------------------------------------------
+// WebSocket: تتبع لحظي لحالة/موقع الطلب
+// قناة الاشتراك: order:{orderId}:tracking
+// رسالة الاشتراك من العميل: {"action":"subscribe","channel":"order:...:tracking"}
+// ---------------------------------------------------------------
+attachWebSocketServer(server, (conn, req) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const token = url.searchParams.get("token");
+
+  let userId = null;
+  try {
+    const payload = jwt.verify(token);
+    userId = payload.sub;
+  } catch {
+    conn.send(JSON.stringify({ type: "error", error: "invalid_token" }));
+    conn.close();
+    return;
+  }
+
+  let subscribedChannel = null;
+
+  conn.on("message", (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      return;
+    }
+
+    if (msg.action === "subscribe" && typeof msg.channel === "string") {
+      const match = /^order:(.+):tracking$/.exec(msg.channel);
+      if (!match) return;
+      const orderId = match[1];
+
+      const order = db.get("SELECT client_id, provider_id FROM orders o LEFT JOIN provider_profiles pp ON pp.id = o.provider_id WHERE o.id = ?", [orderId]);
+      // التحقق: المشترك لازم يكون هو عميل الطلب أو الصنايعي بتاعه بس —
+      // عشان محدش يقدر يتتبع تحركات حد تاني حتى لو خمّن الـ order_id.
+      const isClient = order && order.client_id === userId;
+      const isProvider = order && db.get("SELECT 1 FROM provider_profiles WHERE id = ? AND user_id = ?", [order.provider_id, userId]);
+
+      if (!order || (!isClient && !isProvider)) {
+        conn.send(JSON.stringify({ type: "error", error: "not_authorized_for_this_order" }));
+        return;
+      }
+
+      subscribedChannel = msg.channel;
+      hub.subscribe(subscribedChannel, conn);
+      conn.send(JSON.stringify({ type: "subscribed", channel: subscribedChannel }));
+    }
+  });
+
+  conn.on("close", () => {
+    if (subscribedChannel) hub.unsubscribe(subscribedChannel, conn);
+  });
 });

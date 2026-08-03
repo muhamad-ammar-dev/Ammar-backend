@@ -7,6 +7,7 @@
 const db = require("../db");
 const { requireAuth, requireUserType } = require("../middleware");
 const { uuid } = require("../utils/helpers");
+const hub = require("../ws/hub");
 
 const VALID_TRANSITIONS = {
   pending: ["accepted", "cancelled"],
@@ -175,6 +176,9 @@ async function updateStatus(req, res, body, orderId) {
     payload.sub,
   ]);
 
+  // نشر التحديث لحظيًا لأي حد مشترك في شاشة تتبع الطلب ده (عميل أو صنايعي)
+  hub.publish(`order:${orderId}:tracking`, { type: "status", status: newStatus });
+
   const updated = db.get("SELECT * FROM orders WHERE id = ?", [orderId]);
   return { status: 200, data: updated };
 }
@@ -275,6 +279,95 @@ async function updateAvailability(req, res, body) {
   return { status: 200, data: updated };
 }
 
+// ---------------------------------------------------------------
+// POST /providers/me/location — تحديث الموقع اللحظي (بيتنادى كل كام ثانية
+// وقت "في الطريق")، وبينشر التحديث فورًا لأي شاشة تتبع مشتركة.
+// ---------------------------------------------------------------
+async function updateLiveLocation(req, res, body) {
+  const payload = requireAuth(req);
+  requireUserType(payload, ["provider", "both"]);
+
+  const provider = db.get("SELECT * FROM provider_profiles WHERE user_id = ?", [payload.sub]);
+  if (!provider) return { status: 403, data: { error: "not_a_provider" } };
+
+  const { lat, lng } = body;
+  if (lat == null || lng == null) return { status: 400, data: { error: "lat_lng_required" } };
+
+  db.run(
+    "UPDATE provider_profiles SET current_lat = ?, current_lng = ?, location_updated_at = datetime('now') WHERE id = ?",
+    [lat, lng, provider.id]
+  );
+
+  // لو الصنايعي في رحلة نشطة دلوقتي، ابعت الموقع لشاشة تتبع العميل فورًا
+  const activeOrder = db.get(
+    "SELECT id FROM orders WHERE provider_id = ? AND status IN ('accepted','on_way') ORDER BY created_at DESC LIMIT 1",
+    [provider.id]
+  );
+  if (activeOrder) {
+    hub.publish(`order:${activeOrder.id}:tracking`, { type: "location", lat, lng });
+  }
+
+  return { status: 200, data: { message: "location_updated" } };
+}
+
+// ---------------------------------------------------------------
+// POST /orders/:id/rate
+// ---------------------------------------------------------------
+async function rateOrder(req, res, body, orderId) {
+  const payload = requireAuth(req);
+  const { rating_value, comment } = body;
+
+  if (!rating_value || rating_value < 1 || rating_value > 5) {
+    return { status: 400, data: { error: "rating_value_must_be_1_to_5" } };
+  }
+
+  const order = db.get("SELECT * FROM orders WHERE id = ?", [orderId]);
+  if (!order) return { status: 404, data: { error: "order_not_found" } };
+  if (order.status !== "completed") {
+    return { status: 400, data: { error: "can_only_rate_completed_orders" } };
+  }
+
+  const provider = order.provider_id ? db.get("SELECT * FROM provider_profiles WHERE id = ?", [order.provider_id]) : null;
+
+  let ratingType, ratedUser;
+  if (payload.sub === order.client_id) {
+    ratingType = "client_to_provider";
+    ratedUser = provider?.user_id;
+  } else if (provider && payload.sub === provider.user_id) {
+    ratingType = "provider_to_client";
+    ratedUser = order.client_id;
+  } else {
+    return { status: 403, data: { error: "not_a_party_to_this_order" } };
+  }
+
+  const existing = db.get("SELECT * FROM ratings WHERE order_id = ? AND rating_type = ?", [orderId, ratingType]);
+  if (existing) {
+    return { status: 409, data: { error: "already_rated" } };
+  }
+
+  const id = uuid();
+  db.run(
+    `INSERT INTO ratings (id, order_id, rating_type, rated_by, rated_user, rating_value, comment)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, orderId, ratingType, payload.sub, ratedUser, rating_value, comment || null]
+  );
+
+  // لو العميل هو اللي بيقيّم، نحدّث متوسط تقييم الصنايعي فورًا
+  if (ratingType === "client_to_provider" && provider) {
+    const stats = db.get(
+      "SELECT AVG(rating_value) AS avg, COUNT(*) AS count FROM ratings WHERE rated_user = ? AND rating_type = 'client_to_provider'",
+      [provider.user_id]
+    );
+    db.run("UPDATE provider_profiles SET rating_avg = ?, rating_count = ? WHERE id = ?", [
+      Math.round(stats.avg * 10) / 10,
+      stats.count,
+      provider.id,
+    ]);
+  }
+
+  return { status: 201, data: { message: "rating_submitted", rating_type: ratingType } };
+}
+
 module.exports = {
   listCategories,
   nearbyProviders,
@@ -285,4 +378,6 @@ module.exports = {
   listOrders,
   availableOrders,
   updateAvailability,
+  updateLiveLocation,
+  rateOrder,
 };

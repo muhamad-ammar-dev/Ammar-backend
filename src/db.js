@@ -86,6 +86,18 @@ db.exec(`
     revoked     INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS ratings (
+    id            TEXT PRIMARY KEY,
+    order_id      TEXT NOT NULL REFERENCES orders(id),
+    rating_type   TEXT NOT NULL, -- client_to_provider | provider_to_client
+    rated_by      TEXT NOT NULL REFERENCES users(id),
+    rated_user    TEXT NOT NULL REFERENCES users(id),
+    rating_value  INTEGER NOT NULL,
+    comment       TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(order_id, rating_type)
+  );
 `);
 
 // نضيف تخصصات مبدئية لو الجدول فاضي (بيانات تجريبية للتطوير)
