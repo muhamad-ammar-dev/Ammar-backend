@@ -82,10 +82,14 @@ async function nearbyProviders(req, query) {
 // ---------------------------------------------------------------
 async function createOrder(req, res, body) {
   const payload = requireAuth(req);
-  const { category_id, address_text, lat, lng, notes } = body;
+  const { category_id, address_text, lat, lng, notes, images } = body;
 
   if (!category_id || !address_text || lat == null || lng == null) {
     return { status: 400, data: { error: "category_id_address_lat_lng_required" } };
+  }
+
+  if (images && (!Array.isArray(images) || images.length > 3)) {
+    return { status: 400, data: { error: "images_must_be_array_of_max_3" } };
   }
 
   const id = uuid();
@@ -96,10 +100,22 @@ async function createOrder(req, res, body) {
   );
   db.run("INSERT INTO order_status_log (order_id, status, changed_by) VALUES (?, 'pending', ?)", [id, payload.sub]);
 
+  if (images && images.length > 0) {
+    for (const img of images) {
+      // حد بسيط لحجم كل صورة (تقريبًا) عشان نمنع تخزين ملفات ضخمة في قاعدة
+      // بيانات SQLite المحلية. في الإنتاج: هترفع لـ S3/Firebase Storage
+      // وتخزن هنا الرابط بس مش الصورة نفسها.
+      if (typeof img === "string" && img.length < 3_000_000) {
+        db.run("INSERT INTO order_images (id, order_id, image_base64) VALUES (?, ?, ?)", [uuid(), id, img]);
+      }
+    }
+  }
+
   // TODO (إنتاج): هنا بيتم بث إشعار (FCM) للصنايعية القريبين المتاحين في نفس التخصص.
 
   const order = db.get("SELECT * FROM orders WHERE id = ?", [id]);
-  return { status: 201, data: order };
+  const imageCount = db.get("SELECT COUNT(*) AS c FROM order_images WHERE order_id = ?", [id]).c;
+  return { status: 201, data: { ...order, image_count: imageCount } };
 }
 
 // ---------------------------------------------------------------
@@ -190,7 +206,8 @@ async function getOrder(req, res, body, orderId) {
   requireAuth(req);
   const order = db.get("SELECT * FROM orders WHERE id = ?", [orderId]);
   if (!order) return { status: 404, data: { error: "order_not_found" } };
-  return { status: 200, data: order };
+  const images = db.all("SELECT id, image_base64 FROM order_images WHERE order_id = ?", [orderId]);
+  return { status: 200, data: { ...order, images } };
 }
 
 // ---------------------------------------------------------------
@@ -232,7 +249,8 @@ async function availableOrders(req) {
   if (!provider) return { status: 403, data: { error: "not_a_provider" } };
 
   const orders = db.all(
-    `SELECT o.*, u.name AS client_name
+    `SELECT o.*, u.name AS client_name,
+       (SELECT COUNT(*) FROM order_images oi WHERE oi.order_id = o.id) AS image_count
      FROM orders o
      JOIN users u ON u.id = o.client_id
      WHERE o.status = 'pending'

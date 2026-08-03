@@ -98,6 +98,13 @@ db.exec(`
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(order_id, rating_type)
   );
+
+  CREATE TABLE IF NOT EXISTS order_images (
+    id            TEXT PRIMARY KEY,
+    order_id      TEXT NOT NULL REFERENCES orders(id),
+    image_base64  TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 // نضيف تخصصات مبدئية لو الجدول فاضي (بيانات تجريبية للتطوير)
