@@ -1,0 +1,63 @@
+# Render blueprint — ارفع بيها السيرفر وقاعدة البيانات على Render بضغطة واحدة.
+# الخطوات:
+#   1) اعمل حساب على https://render.com
+#   2) في الداشبورد: New → Blueprint → اربط الـ repo (backends - Copy)
+#   3) Render هيقرا الملف ده تلقائيًا ويعمل web service + redis
+#   4) عدّل قيم sync:false دي من إعدادات الخدمة بعد ما تتسجل في Brevo:
+#      BREVO_API_KEY ، BREVO_FROM_EMAIL ، ADMIN_KEY ، DATABASE_URL (Supabase)
+#      SUPABASE_URL ، SUPABASE_SERVICE_KEY
+#
+# ملحوظة: النسخة المجانية من Redis على Render بتشيل نفسها بعد 30 يوم.
+# للبديل الدائم: استخدم Upstash (https://upstash.com) وحط REDIS_URL هنا/في الداشبورد.
+
+services:
+  - type: web
+    name: utlob-sanaii-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node src/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: MAIL_PROVIDER
+        value: brevo
+      - key: BREVO_FROM_NAME
+        value: Ammar
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_FROM_EMAIL
+        sync: false
+      - key: ADMIN_KEY
+        sync: false
+      # Supabase Storage (اختياري بس شديد الأهمية للإنتاج — من غيره
+      # الصور بتتخزن نصًا في القاعدة وده مش عملي لملايين الصور)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: media
+      - key: JWT_SECRET
+        generateValue: true
+      # قاعدة البيانات = Supabase بتاعك — اكتب الـ connection string في
+      # الداشبورد (sync:false) مش هنا عشان السر ما ينزلش على GitHub.
+      - key: DATABASE_URL
+        sync: false
+      # Supabase pooler بيفرض SSL إجباري والكود محتاجها تصريحة
+      - key: PG_SSL
+        value: "true"
+      # تخزين الـ OTP + الـ rate limit في Redis حقيقي
+      - key: REDIS_URL
+        fromDatabase:
+          name: utlob-sanaii-redis
+          property: connectionString
+
+databases:
+  - name: utlob-sanaii-redis
+    plan: free
+    type: redis
+    maxmemoryPolicy: noeviction

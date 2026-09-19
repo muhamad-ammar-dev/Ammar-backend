@@ -2,3 +2,12 @@ node_modules/
 dev.sqlite
 server.log
 .env
+firebase-service-account.json
+dev-server.log
+server.stderr.log
+server.stdout.log
+server_err.txt
+server_out.txt
+server.stderr.out
+server.stdout.out
+*.log

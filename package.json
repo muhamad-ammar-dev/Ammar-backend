@@ -1,12 +1,17 @@
 {
   "name": "utlob-sanaii-api",
   "version": "0.1.0",
-  "description": "سكيلتون Backend شغال لتطبيق اطلب صنايعي — يعمل فورًا بدون npm install (Node built-ins بس)، وجاهز للترقية لـ Postgres/Redis في الإنتاج.",
+  "description": "Ammar - Backend لمنصة طلب الصنايعية. للتطوير المحلي بيشتغل بـ node:sqlite (مدمجة)، وللإنتاج بـ PostgreSQL + Redis.",
   "type": "commonjs",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "db:init": "node -e \"require('./src/db').ready.then(()=>{console.log('[db] جاهزة ('+require('./src/db').mode+')');process.exit(0)}).catch(e=>{console.error(e);process.exit(1)})\""
+  },
+  "dependencies": {
+    "ioredis": "^5.4.1",
+    "pg": "^8.13.1"
   },
   "engines": {
     "node": ">=22.5.0"

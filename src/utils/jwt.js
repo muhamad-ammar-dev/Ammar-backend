@@ -6,7 +6,16 @@
 
 const crypto = require("node:crypto");
 
-const SECRET = process.env.JWT_SECRET || "dev-secret-change-me-in-production";
+// سر التوكنات لازم يجي من البيئة بس (JWT_SECRET) — مفيش أي سر افتراضي.
+// لو مش متظبط (أو ضعيف) السيرفر مش هيشغل أصلاً، عشان منستخدمناش سر
+// معروف ومعلن في الكود (ده كان ثغرة سابقًا).
+const SECRET = process.env.JWT_SECRET;
+if (!SECRET || SECRET.length < 32) {
+  throw new Error(
+    "JWT_SECRET must be set in the environment to a strong secret (at least 32 characters). " +
+      "Generate one with: openssl rand -hex 32"
+  );
+}
 
 function base64url(input) {
   return Buffer.from(input).toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
