@@ -1,8 +1,8 @@
-# Render blueprint — ارفع بيها السيرفر وقاعدة البيانات على Render بضغطة واحدة.
+# Render blueprint — ارفع بيها السيرفر + قاعدة البيانات (Supabase) + Redis بضغطة واحدة.
 # الخطوات:
 #   1) اعمل حساب على https://render.com
-#   2) في الداشبورد: New → Blueprint → اربط الـ repo (backends - Copy)
-#   3) Render هيقرا الملف ده تلقائيًا ويعمل web service + redis
+#   2) في الداشبورد: New → Blueprint → اربط الـ repo
+#   3) Render هيقرا الملف ده تلقائيًا ويعمل web service + Redis
 #   4) عدّل قيم sync:false دي من إعدادات الخدمة بعد ما تتسجل في Brevo:
 #      BREVO_API_KEY ، BREVO_FROM_EMAIL ، ADMIN_KEY ، DATABASE_URL (Supabase)
 #      SUPABASE_URL ، SUPABASE_SERVICE_KEY
@@ -11,6 +11,14 @@
 # للبديل الدائم: استخدم Upstash (https://upstash.com) وحط REDIS_URL هنا/في الداشبورد.
 
 services:
+  # ----- Redis حقيقي لتخزين الـ OTP + الـ rate limit -----
+  - type: redis
+    name: utlob-sanaii-redis
+    ipAllowList: []
+    plan: free
+    maxmemoryPolicy: noeviction
+
+  # ----- السيرفر الرئيسي -----
   - type: web
     name: utlob-sanaii-api
     runtime: node
@@ -52,12 +60,7 @@ services:
         value: "true"
       # تخزين الـ OTP + الـ rate limit في Redis حقيقي
       - key: REDIS_URL
-        fromDatabase:
+        fromService:
+          type: redis
           name: utlob-sanaii-redis
           property: connectionString
-
-databases:
-  - name: utlob-sanaii-redis
-    plan: free
-    type: redis
-    maxmemoryPolicy: noeviction
