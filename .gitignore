@@ -11,3 +11,4 @@ server_out.txt
 server.stderr.out
 server.stdout.out
 *.log
+fcm-key-b64.txt
