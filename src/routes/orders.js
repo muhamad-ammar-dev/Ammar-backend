@@ -310,11 +310,14 @@ async function createOrder(req, res, body) {
   // حتى لو FCM مش متظبط (النتيجة بتتجاهل بصمت).
   try {
     const categoryName = (await db.get("SELECT name_ar FROM categories WHERE id = ?", [category_id]))?.name_ar || "";
-    await fcm.sendToProvider(provider_id, {
+    const notifResult = await fcm.sendToProvider(provider_id, {
       title: "🔔 طلب جديد",
       body: `${client?.name || client?.phone_number || "عميل"} طلب ${categoryName}${detailsText ? ` — ${detailsText}` : ""} — ${address_text}`,
       data: { type: "new_order", order_id: id },
     });
+    // اقتفاء أثر للإشعارات: في لوج Render هنشوف بالظبط ليه مفيش إشعار
+    // وصل (مش متظبط / مفيش توكن / خطأ FCM) عشان النشر والتعامل أسهل.
+    console.log(`[fcm] new_order provider=${provider_id} order=${id} => ${JSON.stringify(notifResult)}`);
   } catch (err) {
     console.warn("[fcm] تعذّر إرسال الإشعار:", err.message);
   }
