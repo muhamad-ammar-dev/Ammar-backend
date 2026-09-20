@@ -64,6 +64,15 @@ services:
           type: redis
           name: utlob-sanaii-redis
           property: connectionString
+      # --- حسابات استقبال العمولة (تظهر للصنايعية لتحويل مستحقاتهم) ---
+      # القيم دي بتتحط تلقائيًا في platform_settings في قاعدة الإنتاج
+      # عند كل Deploy (مش أسرار — بتظهر نفسها جوه التطبيق لكل الصنايعية).
+      - key: PAYOUT_INSTAPAY
+        value: "muhamadammar@instapay"
+      - key: PAYOUT_VODAFONE
+        value: "01019067128"
+      - key: PAYOUT_PAYPAL
+        value: "https://www.paypal.me/mohamedammar09001"
       # --- Firebase / FCM (إشعارات الدفع) ---
       # القيمة = ملف firebase-service-account.json كله متحوّل لـ base64
       # (سطر واحد — أسهل طريقة للّصق في الداشبورد، مفيش مشاكل أسطر/escape).

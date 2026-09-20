@@ -108,6 +108,23 @@ if (DATABASE_URL) {
       if (!exists) await run("INSERT INTO platform_settings (key, value) VALUES (?, ?)", [key, value]);
     }
 
+    // حسابات استقبال العمولة من البيئة (PAYOUT_*) — بتتحدّث في القاعدة
+    // عند كل Deploy من غير أي تدخل يدوي (الإنتاج بيعتمد على إعدادات
+    // Render كمصدر أساسي على حساب قاعدة البيانات). القيم الفاضية بتتجاهل.
+    const payoutFromEnv = {
+      payout_instapay: process.env.PAYOUT_INSTAPAY,
+      payout_vodafone: process.env.PAYOUT_VODAFONE,
+      payout_paypal: process.env.PAYOUT_PAYPAL,
+    };
+    for (const [key, value] of Object.entries(payoutFromEnv)) {
+      if (value) {
+        await run(
+          "INSERT INTO platform_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          [key, String(value)]
+        );
+      }
+    }
+
     // ترحيلات أعمدة للجداول الموجودة (Postgres يضيف العمود لجدول جديد فقط)
     await run("ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TEXT");
     await run("ALTER TABLE orders ADD COLUMN IF NOT EXISTS hidden_from_client INTEGER NOT NULL DEFAULT 0");
@@ -363,6 +380,18 @@ if (DATABASE_URL) {
   for (const [key, value] of Object.entries(settingDefaults)) {
     const exists = sqlite.prepare("SELECT 1 FROM platform_settings WHERE key = ?").get(key);
     if (!exists) sqlite.prepare("INSERT INTO platform_settings (key, value) VALUES (?, ?)").run(key, value);
+  }
+  // نفس مصدر الرزق في الإنتاج (PAYOUT_*) للمطابقة المحلية.
+  for (const [key, value] of Object.entries({
+    payout_instapay: process.env.PAYOUT_INSTAPAY,
+    payout_vodafone: process.env.PAYOUT_VODAFONE,
+    payout_paypal: process.env.PAYOUT_PAYPAL,
+  })) {
+    if (value) {
+      sqlite
+        .prepare("INSERT INTO platform_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .run(key, String(value));
+    }
   }
 
   // التخصصات المبدئية لو الجدول فاضي

@@ -71,6 +71,9 @@ postgresql://postgres.[المعرّف]:[PASSWORD]@aws-0-[region].pooler.supabase
 | `BREVO_API_KEY` | مفتاح Brevo بتاعك (لإيميلات OTP) |
 | `BREVO_FROM_EMAIL` | إيميل الإرسال المعتمد في Brevo |
 | `ADMIN_KEY` | أي نص طويل عشوائي (سرّي — للوحة الأدمن) |
+| `PAYOUT_INSTAPAY` | حساب انستاباي لاستقبال العمولة (خليه فاضي لو لسه ناوي تنظّمه) |
+| `PAYOUT_VODAFONE` | رقم فودافون كاش لاستقبال العمولة |
+| `PAYOUT_PAYPAL` | رابط باي بال لاستقبال العمولة |
 | `FIREBASE_SERVICE_ACCOUNT_B64` | ملف `firebase-service-account.json` متحوّل لـ base64 (عشان إشعارات FCM — شرح تحت) |
 
 4. اضغط **Save** — هيعمل deploy. أول تشغيل بيعمل الجداول لوحده.
