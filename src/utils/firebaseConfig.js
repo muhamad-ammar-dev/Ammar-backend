@@ -5,7 +5,9 @@
 //   - التحقق من ID token في src/utils/firebaseIdToken.js
 //
 // المطلوب في البيئة (زي بتاع fcm.js):
-//   FIREBASE_SERVICE_ACCOUNT_PATH = مسار ملف الـ JSON الكامل (الأسهل)
+//   FIREBASE_SERVICE_ACCOUNT_PATH      = مسار ملف الـ JSON الكامل (محليًا)
+//   FIREBASE_SERVICE_ACCOUNT_B64       = ملف الـ JSON كله متحوّل لـ base64
+//                                        (سطر واحد — الأسهل للسحابة/Render)
 //   أو:
 //   FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY
 
@@ -24,6 +26,15 @@ function normalizePrivateKey(key) {
 }
 
 function loadFirebaseConfig() {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
+    const raw = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_B64, "base64").toString("utf8");
+    const sa = JSON.parse(raw);
+    return {
+      projectId: sa.project_id,
+      clientEmail: sa.client_email,
+      privateKey: normalizePrivateKey(sa.private_key),
+    };
+  }
   if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
     const raw = fs.readFileSync(process.env.FIREBASE_SERVICE_ACCOUNT_PATH, "utf8");
     const sa = JSON.parse(raw);

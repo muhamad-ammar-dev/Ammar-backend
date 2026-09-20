@@ -48,7 +48,10 @@ const auth = require("./routes/auth");
 const orders = require("./routes/orders");
 const wallet = require("./routes/wallet");
 const devices = require("./routes/devices");
+const fcm = require("./notifications/fcm");
+const { loadFirebaseConfig } = require("./utils/firebaseConfig");
 
+const firebaseConfig = loadFirebaseConfig();
 const PORT = process.env.PORT || 3000;
 
 // [regex, method] -> handler(req, res, body, ...params, query)
@@ -156,7 +159,12 @@ const server = http.createServer(async (req, res) => {
   const query = Object.fromEntries(url.searchParams);
 
   if (req.method === "GET" && url.pathname === "/health") {
-    return sendJson(res, 200, { status: "ok", time: new Date().toISOString() });
+    return sendJson(res, 200, {
+      status: "ok",
+      time: new Date().toISOString(),
+      fcm_configured: fcm.configured,
+      firebase_project: firebaseConfig.projectId || null,
+    });
   }
 
   const match = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));

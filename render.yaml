@@ -64,3 +64,11 @@ services:
           type: redis
           name: utlob-sanaii-redis
           property: connectionString
+      # --- Firebase / FCM (إشعارات الدفع) ---
+      # القيمة = ملف firebase-service-account.json كله متحوّل لـ base64
+      # (سطر واحد — أسهل طريقة للّصق في الداشبورد، مفيش مشاكل أسطر/escape).
+      # ولّدها محليًا بالأمر:
+      #   powershell -Command "[Convert]::ToBase64String([IO.File]::ReadAllBytes('firebase-service-account.json'))"
+      # والمفتاح مش بينزل على GitHub أبدًا (الملف مستثنى في .gitignore).
+      - key: FIREBASE_SERVICE_ACCOUNT_B64
+        sync: false

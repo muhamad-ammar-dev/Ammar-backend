@@ -71,13 +71,31 @@ postgresql://postgres.[المعرّف]:[PASSWORD]@aws-0-[region].pooler.supabase
 | `BREVO_API_KEY` | مفتاح Brevo بتاعك (لإيميلات OTP) |
 | `BREVO_FROM_EMAIL` | إيميل الإرسال المعتمد في Brevo |
 | `ADMIN_KEY` | أي نص طويل عشوائي (سرّي — للوحة الأدمن) |
+| `FIREBASE_SERVICE_ACCOUNT_B64` | ملف `firebase-service-account.json` متحوّل لـ base64 (عشان إشعارات FCM — شرح تحت) |
 
 4. اضغط **Save** — هيعمل deploy. أول تشغيل بيعمل الجداول لوحده.
+
+### تفعيل إشعارات الدفع (FCM) 🔔
+
+بدون المتغير ده السيرفر **مش بيبعت إشعارات** (بيتجاهلها بصمت —
+`fcm_not_configured`). عشان تفعّله:
+
+1. محليًا في فولدر السيرفر، ولّد القيمة (سطر واحد طويل):
+   ```powershell
+   [Convert]::ToBase64String([IO.File]::ReadAllBytes('firebase-service-account.json'))
+   ```
+2. في Render: افتح خدمتك → **Environment** → **Add Environment Variable**:
+   - Key: `FIREBASE_SERVICE_ACCOUNT_B64`
+   - Value: الصق الـ base64 اللي طلع من الخطوة 1
+3. **Save** → **Manual Deploy** → **Deploy latest commit**.
+4. تأكد: افتح `https://[اسم-خدمتك].onrender.com/health`
+   - `"fcm_configured": true` يبقى الإشعارات شغالة ✅
+   - لو `false` يبقى المتغير ناقص أو غلط.
 
 ### التأكد إن كله تمام
 
 افتح في المتصفح: `https://[اسم-خدمتك].onrender.com/health`
-لو رجّع `{"status":"ok"}` يبقى السيرفر + القاعدة شغالين. 🎉
+لو رجّع `{"status":"ok"}` (وصحبها `fcm_configured`) يبقى السيرفر + القاعدة شغالين. 🎉
 
 لو عايز تتأكد من القاعدة لوحدها، عندك محليًا:
 ```bash
