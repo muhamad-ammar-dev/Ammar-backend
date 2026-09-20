@@ -197,6 +197,8 @@ db.ready
       console.log(`🚀 utlob-sanaii-api شغال على http://localhost:${PORT}`);
       console.log(`   جرّب: curl http://localhost:${PORT}/health`);
       console.log(`   WebSocket تتبع لحظي على ws://localhost:${PORT}/ws`);
+      const email = firebaseConfig.clientEmail || "-";
+      console.log(`   [fcm] ${firebaseConfig.privateKey ? "متظبط ✅" : "مش متظبط ❌"} | project=${firebaseConfig.projectId || "-"} | email=${email}`);
     });
   })
   .catch((err) => {
