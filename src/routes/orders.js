@@ -70,6 +70,68 @@ async function getProviderCategoryWithSchema(providerId) {
   return schema ? { ...row, schema } : null;
 }
 
+// أسعار الصنايعي بتتخزن في pricing_data بمفاتيح موّحدة بالشكل
+// "<category_id>:<item_key>" عشان الصنايعي يقدر يشتغل أكتر من مهنة من
+// غير ما مفاتيح البنود تتعارض بين المهن. الدالة دي بتطلّع أسعار مهنة
+// واحدة بس، وبتدعم كمان البيانات القديمة المسطّحة (مهنة واحدة زمان).
+function ratesForCategory(rates, categoryId) {
+  if (!rates || typeof rates !== "object" || Array.isArray(rates)) return {};
+  const prefix = String(categoryId) + ":";
+  const out = {};
+  for (const [key, value] of Object.entries(rates)) {
+    if (key.startsWith(prefix)) {
+      out[key.slice(prefix.length)] = value;
+    } else if (!key.includes(":")) {
+      // توافق قديم (بيانات مسطّحة لمهنة واحدة) + الخدمات المخصصة
+      // (مفاتيحها custom_N عامة على كل المهن مش مربوطة بمهنة).
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+// كل المهن بتاعة الصنايعي مع بنود التسعير والأسعار المحفوظة لكل مهنة
+// (الأسعار بترجع مسطّحة بالمفتاح الأصلي للبند زي ما التطبيق متوقع).
+async function getProviderCategoriesWithSchema(providerId, rates) {
+  const rows = await db.all(
+    `SELECT c.id, c.name_ar, c.icon
+     FROM provider_categories pc JOIN categories c ON c.id = pc.category_id
+     WHERE pc.provider_id = ? ORDER BY c.name_ar`,
+    [providerId]
+  );
+  return rows.map((row) => {
+    const schema = getSchemaByCategoryName(row.name_ar);
+    return {
+      id: row.id,
+      name_ar: row.name_ar,
+      icon: row.icon,
+      pricing_items: schema ? schema.items : [],
+      rates: rates ? ratesForCategory(rates, row.id) : {},
+    };
+  });
+}
+
+// هل الـ pricing_data الجاية من التطبيق متعدّدة المهن؟
+// (يعني { "<categoryId>": { itemKey: price } })
+function isNestedPricingData(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return false;
+  return Object.values(input).some(
+    (v) => v && typeof v === "object" && !Array.isArray(v)
+  );
+}
+
+// بنشيل أي مفاتيح قديمة مسطّحة (لمهنة واحدة زمان) ونسيب المفاتيح
+// الموّحدة بالمهنة (<categoryId>:<itemKey>) والخدمات المخصصة (custom_N).
+// بنستخدمها قبل ما نكتب أسعار بصيغة جديدة عشان ميتسرّبش سعر مهنة
+// قديمة لمهنة تانية.
+function stripLegacyFlatRates(rates) {
+  const out = {};
+  for (const [key, value] of Object.entries(rates || {})) {
+    if (key.includes(":") || key.startsWith("custom_")) out[key] = value;
+  }
+  return out;
+}
+
 function haversineKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -129,9 +191,10 @@ async function nearbyProviders(req, query) {
       rating_avg: p.rating_avg,
       jobs_completed: p.jobs_completed,
       hourly_rate: p.hourly_rate,
-      // أسعاره الخاصة بمهنته (بنود من src/pricing.js) — التطبيق بيحسب
-      // منه سعر الطلب التقديري على طول
-      pricing_data: safeParseJson(p.pricing_data),
+      // أسعاره الخاصة بالمهنة اللي العميل بيدور فيها بس (الصنايعي ممكن
+      // يكون شغال أكتر من مهنة، وكل مهنة ليها أسعارها) — التطبيق بيحسب
+      // منه سعر الطلب التقديري على طول.
+      pricing_data: ratesForCategory(safeParseJson(p.pricing_data), categoryId),
       distance_km: Math.round(p.distance_km * 10) / 10,
       eta_minutes: Math.max(3, Math.round(p.distance_km * 3)), // تقدير تقريبي بسيط
     }));
@@ -139,7 +202,7 @@ async function nearbyProviders(req, query) {
   // بإجراء واحد لكل provider موجود في القايمة النهائية.
   for (const p of nearby) {
     p.custom_services = await db.all(
-      "SELECT key, name_ar, unit_ar, price FROM provider_custom_services WHERE provider_id = ?",
+      "SELECT key, name_ar, unit_ar, price, category_id FROM provider_custom_services WHERE provider_id = ?",
       [p.id]
     );
   }
@@ -167,8 +230,10 @@ async function createOrder(req, res, body) {
   const provider = await db.get("SELECT * FROM provider_profiles WHERE id = ?", [provider_id]);
   if (!provider) return { status: 404, data: { error: "provider_not_found" } };
 
-  const pcRow = await getProviderCategoryWithSchema(provider_id);
-  const schema = pcRow ? pcRow.schema : null;
+  // المخطط بيتحدد حسب المهنة اللي العميل اختارها في الطلب نفسه (مش
+  // أول مهنة عند الصنايعي) — لأن الصنايعي ممكن يكون شغال أكتر من مهنة.
+  const orderCategory = await db.get("SELECT name_ar FROM categories WHERE id = ?", [category_id]);
+  const schema = orderCategory ? getSchemaByCategoryName(orderCategory.name_ar) : null;
 
   let price;
   let hoursNum = null;
@@ -183,8 +248,9 @@ async function createOrder(req, res, body) {
     if (!input || typeof input !== "object" || Array.isArray(input)) {
       return { status: 400, data: { error: "order_details_required" } };
     }
-    const rates = safeParseJson(provider.pricing_data);
-    if (!rates) {
+    // أسعار الصنايعي في المهنة المطلوبة بالذات.
+    const rates = ratesForCategory(safeParseJson(provider.pricing_data), category_id);
+    if (!rates || Object.keys(rates).length === 0) {
       return { status: 400, data: { error: "provider_pricing_not_configured" } };
     }
 
@@ -823,51 +889,108 @@ async function updateAvailability(req, res, body) {
 
   const { is_available, lat, lng, hourly_rate, pricing_data } = body;
 
-  // المهنة الجديدة: category_id مباشرة، أو أول عنصر من category_ids
-  // (توافق مع نسخ التطبيق القديمة) — وفي الحالتين مهنة واحدة بس.
-  let categoryId = body.category_id;
-  if (categoryId == null && Array.isArray(body.category_ids) && body.category_ids.length > 0) {
-    categoryId = body.category_ids[0];
+  // المهن: category_ids (مهنة أو أكتر) أو category_id الواحدة للتوافق
+  // مع نسخ التطبيق القديمة.
+  let categoryIds = null;
+  if (Array.isArray(body.category_ids) && body.category_ids.length > 0) {
+    categoryIds = body.category_ids.map(Number).filter((n) => Number.isFinite(n));
+  } else if (body.category_id != null) {
+    categoryIds = [Number(body.category_id)];
   }
 
-  if (categoryId != null) {
-    const cat = await db.get("SELECT * FROM categories WHERE id = ?", [Number(categoryId)]);
-    if (!cat) return { status: 400, data: { error: "invalid_category" } };
+  const nested = isNestedPricingData(pricing_data);
+  // بنجمع كل أسعار المهن المختارة في ماب واحد بمفاتيح موّحدة بالشكل
+  // "<category_id>:<item_key>" عشان ميحصلش تعارض بين مفاتيح المهن.
+  const asNamespaced = {};
+  let hasRates = false;
 
-    const schema = getSchemaByCategoryName(cat.name_ar);
-    if (!schema) {
-      return { status: 400, data: { error: "category_pricing_not_supported", category: cat.name_ar } };
+  if (categoryIds && categoryIds.length > 0) {
+    // اختيار/تغيير المهن — كل مهنة بنتحقق من بنودها وكل خانة إجبارية.
+    for (const categoryId of categoryIds) {
+      const cat = await db.get("SELECT * FROM categories WHERE id = ?", [categoryId]);
+      if (!cat) return { status: 400, data: { error: "invalid_category" } };
+
+      const schema = getSchemaByCategoryName(cat.name_ar);
+      if (!schema) {
+        return { status: 400, data: { error: "category_pricing_not_supported", category: cat.name_ar } };
+      }
+
+      // لو الأسعار واصلة متعدّدة المهن ناخد بتاعة المهنة دي بالذات،
+      // لو مسطّحة (نسخة قديمة) بنستخدمها لما تكون مهنة واحدة بس.
+      const catInput = nested
+        ? (pricing_data[String(categoryId)] ?? pricing_data[categoryId])
+        : (categoryIds.length === 1 ? pricing_data : null);
+
+      const check = validatePricingData(schema, catInput);
+      if (!check.ok) return { status: 400, data: { error: check.error, category_id: categoryId } };
+
+      for (const [key, value] of Object.entries(check.rates)) {
+        asNamespaced[`${categoryId}:${key}`] = value;
+      }
+      hasRates = true;
     }
 
-    const check = validatePricingData(schema, pricing_data);
-    if (!check.ok) return { status: 400, data: { error: check.error } };
-
-    // مهنة واحدة = نمسح أي اختيارات قديمة وندوّس بواحدة بس
+    // المهن الجديدة بتدوّس على أي اختيارات قديمة (بنمسح ونكتب من جديد).
     await db.run("DELETE FROM provider_categories WHERE provider_id = ?", [provider.id]);
-    await db.run("INSERT INTO provider_categories (provider_id, category_id) VALUES (?, ?)", [
-      provider.id,
-      Number(categoryId),
-    ]);
+    for (const categoryId of categoryIds) {
+      await db.run("INSERT INTO provider_categories (provider_id, category_id) VALUES (?, ?)", [
+        provider.id,
+        categoryId,
+      ]);
+    }
+  } else if (pricing_data != null) {
+    // تحديث أسعار المهن الحالية من غير تغييرها.
+    const currentCats = await db.all(
+      `SELECT c.id AS category_id, c.name_ar
+       FROM provider_categories pc JOIN categories c ON c.id = pc.category_id
+       WHERE pc.provider_id = ?`,
+      [provider.id]
+    );
+    if (currentCats.length === 0) {
+      return { status: 400, data: { error: "no_category_selected_yet" } };
+    }
 
+    // بنبدأ من الأسعار المحفوظة عشان أي مهنة مش مبعوتة في الطلب تفضل
+    // بأسعارها زي ما هي (تحديث جزئي).
+    Object.assign(asNamespaced, safeParseJson(provider.pricing_data) || {});
+
+    if (nested) {
+      // تحديث المهن المبعوتة (كل المهن عادةً) مع بعض.
+      for (const cat of currentCats) {
+        const catInput = pricing_data[String(cat.category_id)] ?? pricing_data[cat.category_id];
+        if (catInput == null) continue;
+        const schema = getSchemaByCategoryName(cat.name_ar);
+        if (!schema) continue;
+        const check = validatePricingData(schema, catInput);
+        if (!check.ok) return { status: 400, data: { error: check.error, category_id: cat.category_id } };
+        for (const [key, value] of Object.entries(check.rates)) {
+          asNamespaced[`${cat.category_id}:${key}`] = value;
+        }
+        hasRates = true;
+      }
+    } else {
+      // توافق قديم: أسعار مسطّحة = أول مهنة بس.
+      const first = currentCats[0];
+      const schema = getSchemaByCategoryName(first.name_ar);
+      if (!schema) {
+        return { status: 400, data: { error: "category_pricing_not_supported", category: first.name_ar } };
+      }
+      const check = validatePricingData(schema, pricing_data);
+      if (!check.ok) return { status: 400, data: { error: check.error } };
+      for (const [key, value] of Object.entries(check.rates)) {
+        asNamespaced[`${first.category_id}:${key}`] = value;
+      }
+      hasRates = true;
+    }
+  }
+
+  if (hasRates) {
     // hourly_rate بنسيبه = أرخص بند عند الصنايعي (يظهر كـ"يبدأ من" في
     // الشاشات القديمة)، و pricing_data هو المصدر الرسمي للأسعار.
-    const minRate = Math.min(...Object.values(check.rates));
+    const minRate = Math.min(...Object.values(asNamespaced));
     await db.run(
       "UPDATE provider_profiles SET pricing_data = ?, hourly_rate = ? WHERE id = ?",
-      [JSON.stringify(check.rates), minRate, provider.id]
-    );
-  } else if (pricing_data != null) {
-    // تحديث أسعار المهنة الحالية من غير تغييرها
-    const pcRow = await getProviderCategoryWithSchema(provider.id);
-    if (!pcRow) return { status: 400, data: { error: "no_category_selected_yet" } };
-
-    const check = validatePricingData(pcRow.schema, pricing_data);
-    if (!check.ok) return { status: 400, data: { error: check.error } };
-
-    const minRate = Math.min(...Object.values(check.rates));
-    await db.run(
-      "UPDATE provider_profiles SET pricing_data = ?, hourly_rate = ? WHERE id = ?",
-      [JSON.stringify(check.rates), minRate, provider.id]
+      [JSON.stringify(asNamespaced), Number.isFinite(minRate) ? minRate : 0, provider.id]
     );
   }
 
@@ -886,8 +1009,10 @@ async function updateAvailability(req, res, body) {
 
   const updated = await db.get("SELECT * FROM provider_profiles WHERE id = ?", [provider.id]);
   updated.pricing_data = safeParseJson(updated.pricing_data);
-  const pcRow = await getProviderCategoryWithSchema(provider.id);
-  updated.category_id = pcRow ? pcRow.category_id : null;
+  const cats = await getProviderCategoriesWithSchema(provider.id, updated.pricing_data);
+  updated.categories = cats;
+  updated.category_ids = cats.map((c) => c.id);
+  updated.category_id = cats.length ? cats[0].id : null;
   updated.custom_services = await listCustomServices(provider.id);
   return { status: 200, data: updated };
 }
@@ -1040,9 +1165,16 @@ async function getMyProvider(req) {
   const payload = await requireAuth(req);
   const provider = await db.get("SELECT * FROM provider_profiles WHERE user_id = ?", [payload.sub]);
   if (!provider) return { status: 403, data: { error: "not_a_provider" } };
-  provider.pricing_data = safeParseJson(provider.pricing_data);
-  const pcRow = await getProviderCategoryWithSchema(provider.id);
-  provider.category_id = pcRow ? pcRow.category_id : null;
+  const parsedPricing = safeParseJson(provider.pricing_data);
+  // كل المهن المختارة (ممكن تكون أكتر من واحدة) مع بنود التسعير
+  // وأسعار كل مهنة مسطّحة بمفاتيحها الأصلية للتطبيق.
+  const cats = await getProviderCategoriesWithSchema(provider.id, parsedPricing);
+  provider.categories = cats;
+  provider.category_ids = cats.map((c) => c.id);
+  provider.category_id = cats.length ? cats[0].id : null;
+  // للتوافق مع نسخ التطبيق القديمة اللي بتقرا pricing_data مسطّح لمهنة
+  // واحدة بس: بنرجع أسعار أول مهنة. النسخ الجديدة بتستخدم categories.
+  provider.pricing_data = cats.length ? cats[0].rates : parsedPricing;
   provider.custom_services = await listCustomServices(provider.id);
   return { status: 200, data: provider };
 }
@@ -1054,7 +1186,7 @@ async function getMyProvider(req) {
 // ---------------------------------------------------------------
 async function listCustomServices(providerId) {
   return db.all(
-    "SELECT key, name_ar, unit_ar, price FROM provider_custom_services WHERE provider_id = ? ORDER BY created_at",
+    "SELECT key, name_ar, unit_ar, price, category_id FROM provider_custom_services WHERE provider_id = ? ORDER BY created_at",
     [providerId]
   );
 }
@@ -1089,6 +1221,26 @@ async function addCustomService(req, res, body) {
     return { status: 400, data: { error: "custom_service_invalid" } };
   }
 
+  // المهنة اللي هتتضاف فيها الخدمة: لو الصنايعي شغال مهنة واحدة بناخدها
+  // تلقائيًا (مفيش خلاف)، ولو شغال أكتر من مهنة لازم يحدد المهنة بنفسه
+  // (والخانة في التطبيق بترجعله مهنه المختارة بس). null بيتسمح بس
+  // للتراجع؟ لأ — null معناه خدمة عامة على كل المهن (سلوك قديم).
+  const provCategories = await db.all(
+    "SELECT category_id FROM provider_categories WHERE provider_id = ?",
+    [provider.id]
+  );
+  const categoryIds = provCategories.map((r) => r.category_id);
+
+  let categoryId = null;
+  if (body.category_id != null) {
+    categoryId = Number(body.category_id);
+    if (!categoryIds.includes(categoryId)) {
+      return { status: 400, data: { error: "invalid_category" } };
+    }
+  } else if (categoryIds.length === 1) {
+    categoryId = categoryIds[0];
+  }
+
   const existing = await db.all(
     "SELECT key FROM provider_custom_services WHERE provider_id = ?",
     [provider.id]
@@ -1101,8 +1253,8 @@ async function addCustomService(req, res, body) {
   }
 
   await db.run(
-    "INSERT INTO provider_custom_services (provider_id, key, name_ar, unit_ar, price) VALUES (?, ?, ?, ?, ?)",
-    [provider.id, key, name, unit || null, price]
+    "INSERT INTO provider_custom_services (provider_id, key, name_ar, unit_ar, price, category_id) VALUES (?, ?, ?, ?, ?, ?)",
+    [provider.id, key, name, unit || null, price, categoryId]
   );
 
   const services = await listCustomServices(provider.id);
@@ -1138,13 +1290,21 @@ async function syncPricingWithCustom(providerId) {
   const row = await db.get("SELECT pricing_data FROM provider_profiles WHERE id = ?", [providerId]);
   const rates = safeParseJson(row?.pricing_data) || {};
   // بنشيل أي مفاتيح custom قديمة من جوه pricing_data عشان نعيد بنائها
-  // من الجدول بشكل نظيف (دي المصدر الرسمي للأسماء والأسعار).
+  // من الجدول بشكل نظيف (دي المصدر الرسمي للأسماء والأسعار). بنشيل
+  // الشكلين: العام القديم (custom_N) والموحّد بالمهنة (<catId>:custom_N).
   for (const k of Object.keys(rates)) {
-    if (k.startsWith("custom_")) delete rates[k];
+    if (/^custom_\d+$/.test(k) || /^\d+:custom_\d+$/.test(k)) delete rates[k];
   }
   const services = await listCustomServices(providerId);
   for (const s of services) {
-    rates[s.key] = Number(s.price);
+    // الخدمة المخصصة ليها مهنة — بتتحفظ بمفتاح موحّد بالمهنة عشان
+    // تظهر للعميل في طلبات المهنة دي بس (ومتظهرش في المهنة التانية).
+    if (s.category_id != null) {
+      rates[`${s.category_id}:${s.key}`] = Number(s.price);
+    } else {
+      // توافق قديم: خدمة من غير مهنة بتفضل ظاهرة في كل المهن.
+      rates[s.key] = Number(s.price);
+    }
   }
   await db.run("UPDATE provider_profiles SET pricing_data = ? WHERE id = ?", [
     JSON.stringify(rates),

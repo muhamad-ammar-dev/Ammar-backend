@@ -151,7 +151,6 @@ if (DATABASE_URL) {
         ["زجاج وسيكوريت", "🪟"],
         ["الوميتال", "🚪"],
         ["نقل اثاث", "🚚"],
-        ["استرجي", "🧵"],
         ["ونش تشوين", "🏗️"],
         ["تركيب كرانيش فوم", "🖼️"],
         ["صيانة دش", "📡"],
@@ -314,12 +313,16 @@ if (DATABASE_URL) {
 
     -- خدمات مخصصة بيضيفها الصنايعي بنفسه (اسم + وحدة + سعر) فوق
     -- البنود الإجبارية بتاعة مهنته — كل صنايعي ليه الخدمات بتاعته.
+    -- category_id بيحدد المهنة اللي الخدمة دي متاحة فيها: مهنة واحدة
+    -- أو متعددة (الصنايعي الشغال أكتر من مهنة بيتحكم في مهنة كل خدمة).
+    -- null = لخدمات قديمة (قبل تقسيم المهن) بتفضل ظاهرة في كل المهن.
     CREATE TABLE IF NOT EXISTS provider_custom_services (
       provider_id TEXT NOT NULL REFERENCES provider_profiles(id),
       key         TEXT NOT NULL,
       name_ar     TEXT NOT NULL,
       unit_ar     TEXT,
       price       NUMERIC NOT NULL,
+      category_id INTEGER REFERENCES categories(id),
       created_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
       PRIMARY KEY (provider_id, key)
     );
@@ -359,6 +362,8 @@ if (DATABASE_URL) {
   addColumn("provider_profiles", "hourly_rate", "REAL NOT NULL DEFAULT 0");
   // أسعار الصنايعي الخاصة بمهنته (JSON: {item_key: سعر الوحدة}) — من src/pricing.js
   addColumn("provider_profiles", "pricing_data", "TEXT");
+  // المهنة اللي الخدمة المخصصة متاحة فيها (null = خدمات قديمة عامة)
+  addColumn("provider_custom_services", "category_id", "INTEGER REFERENCES categories(id)");
   // الكميات اللي دخلها العميل في تفاصيل الطلب (JSON: {item_key: كمية})
   addColumn("orders", "order_details", "TEXT");
   addColumn("users", "avatar", "TEXT");
@@ -416,7 +421,6 @@ if (DATABASE_URL) {
       ["زجاج وسيكوريت", "🪟"],
       ["الوميتال", "🚪"],
       ["نقل اثاث", "🚚"],
-      ["استرجي", "🧵"],
       ["ونش تشوين", "🏗️"],
       ["تركيب كرانيش فوم", "🖼️"],
       ["صيانة دش", "📡"],

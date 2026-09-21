@@ -595,28 +595,6 @@ const PRICING_SCHEMAS = {
       { key: "plug_after", label_ar: "تركيب الأجهزة بعد النقل", unit_ar: "قطعة" },
     ],
   },
-  "استرجي": {
-    items: [
-      { key: "wall_stretch", label_ar: "استرجي حوائط", unit_ar: "متر طولي" },
-      { key: "ceiling_stretch", label_ar: "استرجي أسقف", unit_ar: "متر طولي" },
-      { key: "room_stretch", label_ar: "استرجي غرفة واحدة", unit_ar: "غرفة" },
-      { key: "apartment_stretch", label_ar: "استرجي شقة كاملة", unit_ar: "شقة" },
-      { key: "wall_crack_fix_st", label_ar: "معالجة شروخ الحوائط", unit_ar: "متر طولي" },
-      { key: "ceiling_crack_fix_st", label_ar: "معالجة شروخ الأسقف", unit_ar: "متر طولي" },
-      { key: "damp_swell_fix", label_ar: "معالجة الرطوبة والانتفاخ", unit_ar: "متر²" },
-      { key: "wall_sand_st", label_ar: "صنفرة حوائط", unit_ar: "متر²" },
-      { key: "ceiling_sand_st", label_ar: "صنفرة أسقف", unit_ar: "متر²" },
-      { key: "wall_paste_st", label_ar: "معجون حوائط", unit_ar: "متر²" },
-      { key: "ceiling_paste_st", label_ar: "معجون أسقف", unit_ar: "متر²" },
-      { key: "old_paint_remove_st", label_ar: "إزالة دهانات قديمة", unit_ar: "متر²" },
-      { key: "wall_prep_st", label_ar: "تجهيز الحوائط قبل الدهان", unit_ar: "متر²" },
-      { key: "ceiling_prep_st", label_ar: "تجهيز الأسقف قبل الدهان", unit_ar: "متر²" },
-      { key: "wall_paint_st", label_ar: "دهان حوائط", unit_ar: "متر²" },
-      { key: "ceiling_paint_st", label_ar: "دهان أسقف", unit_ar: "متر²" },
-      { key: "room_paint_st", label_ar: "دهان غرفة واحدة", unit_ar: "غرفة" },
-      { key: "apartment_paint_st", label_ar: "دهان شقة كاملة", unit_ar: "شقة" },
-    ],
-  },
   "ونش تشوين": {
     items: [
       { key: "material_floor", label_ar: "رفع مواد بناء بالدور", unit_ar: "دور" },
