@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS provider_custom_services (
   name_ar     TEXT NOT NULL,
   unit_ar     TEXT,
   price       NUMERIC NOT NULL,
+  category_id BIGINT REFERENCES categories(id),
   created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (provider_id, key)
 );
