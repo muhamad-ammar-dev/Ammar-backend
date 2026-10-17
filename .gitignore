@@ -14,3 +14,4 @@ server.stdout.out
 fcm-key-b64.txt
 dev.sqlite.bak-*
 delete_test_providers.js
+supabase-olddata-backup-*.json
