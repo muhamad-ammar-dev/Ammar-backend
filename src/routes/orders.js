@@ -1402,6 +1402,7 @@ async function getServiceRequestQuotes(req, query, requestId) {
   const rawQuotes = await db.all(
     `SELECT q.*, pp.id AS provider_profile_id, u.name AS provider_name,
             pp.current_lat AS provider_lat, pp.current_lng AS provider_lng,
+            pp.rating_avg AS provider_rating_avg, pp.rating_count AS provider_rating_count,
             EXISTS (
               SELECT 1 FROM provider_wallets w
               WHERE w.provider_id = pp.id AND w.unpaid_commission > 0
