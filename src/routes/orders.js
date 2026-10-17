@@ -1406,6 +1406,16 @@ async function getServiceRequestQuotes(req, query, requestId) {
   if (request.client_id !== payload.sub && payload.user_type !== "provider" && payload.user_type !== "both") {
     return { status: 403, data: { error: "not_authorized" } };
   }
+  // بنود الطلب المختارة + اسم المهنة عشان تتعرض في قالب صفحة العروض (زي الشكل
+  // اللي الصنايعي شايفه: المهنة + الوصف + البنود + العنوان).
+  const requestCategory = request.category_id
+    ? await db.get("SELECT name_ar FROM categories WHERE id = ?", [request.category_id])
+    : null;
+  const requestView = {
+    ...request,
+    category_name: requestCategory ? requestCategory.name_ar : null,
+    items: resolveOrderItems(requestCategory ? requestCategory.name_ar : null, request.order_details),
+  };
 
   const rawQuotes = await db.all(
     `SELECT q.*, pp.id AS provider_profile_id, u.name AS provider_name,
@@ -1437,7 +1447,7 @@ async function getServiceRequestQuotes(req, query, requestId) {
   return {
     status: 200,
     data: {
-      request,
+      request: requestView,
       quotes,
       quote_count: quotes.length,
       average_price: averagePrice,
