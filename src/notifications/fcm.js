@@ -142,6 +142,18 @@ function sendRawMessage(message) {
     .catch((err) => ({ error: err.message }));
 }
 
+// FCM HTTP v1 بيرفض أي قيمة في data مش string (بيرجّع 400 INVALID_ARGUMENT).
+// فبنحوّل كل القيم لنصوص هنا عشان أي route يبعت أرقام (زي category_id) من غير
+// ما الإشعار كله يفشل.
+function stringifyData(data) {
+  const out = {};
+  for (const [key, value] of Object.entries(data || {})) {
+    if (value == null) continue;
+    out[key] = typeof value === "string" ? value : String(value);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------
 // API عام للـ routes
 // ---------------------------------------------------------------
@@ -156,7 +168,7 @@ async function sendToUser(userId, { title, body, data }) {
       await sendRawMessage({
         token: row.token,
         notification: { title, body },
-        data: data || {},
+        data: stringifyData(data),
         android: { priority: "high", notification: { sound: "default", channelId: "orders" } },
       })
     );
@@ -169,6 +181,40 @@ async function sendToProvider(providerId, notification) {
   const provider = await db.get("SELECT user_id FROM provider_profiles WHERE id = ?", [providerId]);
   if (!provider) return { skipped: "provider_not_found" };
   return sendToUser(provider.user_id, notification);
+}
+
+/// إرسال إشعار لقائمة مستخدمين بعينهم (كل أجهزتهم).
+/// مفيدة لما نبعت لصنايعية محددين حسب المسافة أو المهنة.
+async function sendToUsers(userIds, notification) {
+  if (!configured) return { skipped: "fcm_not_configured" };
+  const ids = Array.from(new Set((userIds || []).filter((id) => id != null)));
+  if (!ids.length) return { skipped: "no_recipients" };
+  const results = [];
+  for (const userId of ids) {
+    results.push(await sendToUser(userId, notification));
+  }
+  return results;
+}
+
+/// إرسال إشعار لكل الصنايعية المسجلين في مهنة معيّنة (category_id)
+/// — ده المستخدم في فلو "طلب مفتوح": أي صنايعي في نفس المهنة يستلم إشعار
+/// بالطلب الجديد وكل مهنة تخاف على أسعارها.
+async function sendToCategoryProviders(categoryId, notification) {
+  if (!configured) return { skipped: "fcm_not_configured" };
+  if (categoryId == null) return { skipped: "category_not_specified" };
+  const rows = await db.all(
+    `SELECT pp.user_id AS user_id
+     FROM provider_categories pc
+     JOIN provider_profiles pp ON pp.id = pc.provider_id
+     WHERE pc.category_id = ? AND pp.is_available = 1`,
+    [categoryId]
+  );
+  if (!rows.length) return { skipped: "no_providers_in_category" };
+  const results = [];
+  for (const row of rows) {
+    results.push(await sendToUser(row.user_id, notification));
+  }
+  return results;
 }
 
 /// تسجيل/تحديث توكن جهاز
@@ -198,7 +244,9 @@ async function unregisterToken(userId, token) {
 module.exports = {
   configured,
   sendToUser,
+  sendToUsers,
   sendToProvider,
+  sendToCategoryProviders,
   registerToken,
   unregisterToken,
 };

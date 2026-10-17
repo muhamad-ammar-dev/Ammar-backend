@@ -130,6 +130,7 @@ if (DATABASE_URL) {
     await run("ALTER TABLE orders ADD COLUMN IF NOT EXISTS hidden_from_client INTEGER NOT NULL DEFAULT 0");
     await run("ALTER TABLE orders ADD COLUMN IF NOT EXISTS hidden_from_provider INTEGER NOT NULL DEFAULT 0");
     await run("ALTER TABLE orders ADD COLUMN IF NOT EXISTS commission_charged_at TEXT");
+    await run("ALTER TABLE service_requests ADD COLUMN IF NOT EXISTS hidden_from_client INTEGER NOT NULL DEFAULT 0");
 
     const catCount = await get("SELECT COUNT(*)::int AS c FROM categories");
     if (Number(catCount.c) === 0) {
@@ -249,6 +250,38 @@ if (DATABASE_URL) {
       cancelled_at    TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS service_requests (
+      id              TEXT PRIMARY KEY,
+      client_id       TEXT NOT NULL REFERENCES users(id),
+      category_id     INTEGER NOT NULL REFERENCES categories(id),
+      status          TEXT NOT NULL DEFAULT 'waiting_for_quotes',
+      description     TEXT NOT NULL,
+      address_text    TEXT NOT NULL,
+      lat             REAL NOT NULL,
+      lng             REAL NOT NULL,
+      order_details   TEXT,
+      provider_id     TEXT REFERENCES provider_profiles(id),
+      price           NUMERIC,
+      estimated_hours NUMERIC,
+      quote_id        TEXT,
+      created_at      TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+      accepted_at     TEXT,
+      cancelled_at    TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS service_request_quotes (
+      id                TEXT PRIMARY KEY,
+      service_request_id TEXT NOT NULL REFERENCES service_requests(id) ON DELETE CASCADE,
+      provider_id       TEXT NOT NULL REFERENCES provider_profiles(id),
+      price             NUMERIC NOT NULL,
+      estimated_hours   NUMERIC NOT NULL,
+      notes             TEXT,
+      status            TEXT NOT NULL DEFAULT 'pending',
+      created_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+      updated_at        TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+      UNIQUE(service_request_id, provider_id)
+    );
+
     CREATE TABLE IF NOT EXISTS order_status_log (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       order_id    TEXT NOT NULL REFERENCES orders(id),
@@ -344,6 +377,24 @@ if (DATABASE_URL) {
       platform   TEXT NOT NULL DEFAULT 'android',
       created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
     );
+
+    -- إبلاغات/شكاوى المستخدمين — بتراجعها لوحة الإدارة.
+    -- reporter_id: اللي بعت الإبلاغ. reported_user_id: الشخص المُبلَّغ عنه
+    -- (لو اتعرف من الرقم). reported_phone: الرقم اللي كتبه المُبلِّغ (حتى
+    -- لو مش مربوط بحساب). order_id: الطلب المتعلق بالنزاع (اختياري).
+    CREATE TABLE IF NOT EXISTS reports (
+      id               TEXT PRIMARY KEY,
+      reporter_id      TEXT NOT NULL REFERENCES users(id),
+      reported_user_id TEXT REFERENCES users(id),
+      reported_phone   TEXT,
+      order_id         TEXT,
+      type             TEXT NOT NULL, -- dispute | fake_account | abuse | other
+      description      TEXT NOT NULL,
+      status           TEXT NOT NULL DEFAULT 'open', -- open | resolved | dismissed
+      admin_note       TEXT,
+      created_at       TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+      resolved_at      TEXT
+    );
   `);
 
   // أعمدة إضافية للـ DB المحلي القديم (بيتضافوا بالتدريج من غير مسح بيانات)
@@ -369,10 +420,27 @@ if (DATABASE_URL) {
   addColumn("users", "avatar", "TEXT");
   addColumn("users", "email", "TEXT");
   addColumn("users", "deleted_at", "TEXT");
+  // الحظر الإداري: علامة منفصلة عن is_active (الحساب ممكن يكون نشط
+  // بس محظور من الأدمن)، وسبب الحظر بيظهر للمستخدم عند محاولة الدخول.
+  addColumn("users", "is_banned", "INTEGER NOT NULL DEFAULT 0");
+  addColumn("users", "ban_reason", "TEXT");
+  addColumn("users", "banned_at", "TEXT");
   addColumn("orders", "hidden_from_client", "INTEGER DEFAULT 0");
   addColumn("orders", "hidden_from_provider", "INTEGER DEFAULT 0");
+  // "مسح السجل" كعميل: إخفاء طلبات عروض الأسعار المقفولة بس، ومش بيتمسح
+  // أي طلب لسه مفتوح (waiting_for_quotes). نفس فكرة hidden_from_* بتاعة orders.
+  addColumn("service_requests", "hidden_from_client", "INTEGER DEFAULT 0");
   // أول تفاعل (فتح الطلب أو قبوله) اللي سجّل عمولة المنصة على الطلب ده
   addColumn("orders", "commission_charged_at", "TEXT");
+
+  // مؤشرات الطلبات والعروض
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS idx_service_requests_client ON service_requests (client_id, status);
+    CREATE INDEX IF NOT EXISTS idx_service_request_quotes_request ON service_request_quotes (service_request_id, status);
+    CREATE INDEX IF NOT EXISTS idx_service_request_quotes_provider ON service_request_quotes (provider_id);
+    CREATE INDEX IF NOT EXISTS idx_reports_status ON reports (status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports (reporter_id);
+  `);
 
   // إعدادات المنصة الافتراضية
   const settingDefaults = {

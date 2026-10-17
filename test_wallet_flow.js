@@ -25,7 +25,8 @@ async function api(method, path, token, body, adminKey) {
 
 async function login(phone, name) {
   await api("POST", "/auth/otp", null, { phone_number: phone });
-  const v = await api("POST", "/auth/verify", null, { phone_number: phone, otp: "1234", name });
+  const otp = process.env.DEV_OTP || "1234";
+  const v = await api("POST", "/auth/verify", null, { phone_number: phone, otp, name });
   return v.data.access_token;
 }
 

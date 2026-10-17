@@ -20,12 +20,19 @@ CREATE TABLE IF NOT EXISTS users (
   avatar       TEXT,
   user_type    TEXT NOT NULL DEFAULT 'client', -- client | provider | both
   is_active    INTEGER NOT NULL DEFAULT 1,
+  is_banned    INTEGER NOT NULL DEFAULT 0,
+  ban_reason   TEXT,
+  banned_at    TEXT,
   deleted_at   TEXT,
   created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 -- بريد إضافي للحسابات القديمة اللي اتعملت قبل عمود الإيميل
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+-- الحظر الإداري (للـ DB القديم — علامة منفصلة عن is_active)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email) WHERE email IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS provider_profiles (
@@ -81,6 +88,39 @@ CREATE TABLE IF NOT EXISTS orders (
   cancelled_at       TEXT,
   hidden_from_client INTEGER NOT NULL DEFAULT 0,
   hidden_from_provider INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS service_requests (
+  id              TEXT PRIMARY KEY,
+  client_id       TEXT NOT NULL REFERENCES users(id),
+  category_id     BIGINT NOT NULL REFERENCES categories(id),
+  status          TEXT NOT NULL DEFAULT 'waiting_for_quotes',
+  description     TEXT NOT NULL,
+  address_text    TEXT NOT NULL,
+  lat             DOUBLE PRECISION NOT NULL,
+  lng             DOUBLE PRECISION NOT NULL,
+  order_details   TEXT,
+  provider_id     TEXT REFERENCES provider_profiles(id),
+  price           NUMERIC,
+  estimated_hours NUMERIC,
+  quote_id        TEXT,
+  created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  accepted_at     TEXT,
+  cancelled_at    TEXT,
+  hidden_from_client INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS service_request_quotes (
+  id              TEXT PRIMARY KEY,
+  service_request_id TEXT NOT NULL REFERENCES service_requests(id) ON DELETE CASCADE,
+  provider_id     TEXT NOT NULL REFERENCES provider_profiles(id),
+  price           NUMERIC NOT NULL,
+  estimated_hours NUMERIC NOT NULL,
+  notes           TEXT,
+  status          TEXT NOT NULL DEFAULT 'pending',
+  created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(service_request_id, provider_id)
 );
 
 CREATE TABLE IF NOT EXISTS order_status_log (
@@ -176,6 +216,24 @@ CREATE TABLE IF NOT EXISTS device_tokens (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- إبلاغات/شكاوى المستخدمين — بتراجعها لوحة الإدارة.
+-- reporter_id: اللي بعت الإبلاغ. reported_user_id: الشخص المُبلَّغ عنه
+-- (لو اتعرف من الرقم). reported_phone: الرقم اللي كتبه المُبلِّغ (حتى
+-- لو مش مربوط بحساب). order_id: الطلب المتعلق بالنزاع (اختياري).
+CREATE TABLE IF NOT EXISTS reports (
+  id               TEXT PRIMARY KEY,
+  reporter_id      TEXT NOT NULL REFERENCES users(id),
+  reported_user_id TEXT REFERENCES users(id),
+  reported_phone   TEXT,
+  order_id         TEXT,
+  type             TEXT NOT NULL, -- dispute | fake_account | abuse | other
+  description      TEXT NOT NULL,
+  status           TEXT NOT NULL DEFAULT 'open', -- open | resolved | dismissed
+  admin_note       TEXT,
+  created_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  resolved_at      TEXT
+);
+
 -- ============ الفهارس (performance) ============
 
 -- أعمدة جديدة للـ DB القديم (من غير مسح بيانات)
@@ -196,11 +254,16 @@ CREATE INDEX IF NOT EXISTS idx_orders_provider ON orders (provider_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
 CREATE INDEX IF NOT EXISTS idx_orders_created ON orders (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_category ON orders (category_id);
+CREATE INDEX IF NOT EXISTS idx_service_requests_client ON service_requests (client_id, status);
+CREATE INDEX IF NOT EXISTS idx_service_request_quotes_request ON service_request_quotes (service_request_id, status);
+CREATE INDEX IF NOT EXISTS idx_service_request_quotes_provider ON service_request_quotes (provider_id);
 
 CREATE INDEX IF NOT EXISTS idx_status_log_order ON order_status_log (order_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens (user_id);
 CREATE INDEX IF NOT EXISTS idx_ratings_rated ON ratings (rated_user, rating_type);
 CREATE INDEX IF NOT EXISTS idx_order_images_order ON order_images (order_id);
+CREATE INDEX IF NOT EXISTS idx_reports_status ON reports (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports (reporter_id);
 CREATE INDEX IF NOT EXISTS idx_wallet_tx_wallet ON wallet_transactions (wallet_id);
 CREATE INDEX IF NOT EXISTS idx_commission_payments_provider ON commission_payments (provider_id);
 CREATE INDEX IF NOT EXISTS idx_commission_payments_status ON commission_payments (status);

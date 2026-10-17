@@ -5,15 +5,7 @@
 
 const { requireAuth } = require("../middleware");
 const walletService = require("../wallet");
-
-async function adminAuthorized(req) {
-  // مفتاح الأدمن بييجي من البيئة بس (ADMIN_KEY) — مفيش مفتاح افتراضي خالص.
-  // لو مفتاح الأدمن مش متظبط، شاشات الإدارة مقفولة تمامًا (403).
-  const adminKey = process.env.ADMIN_KEY;
-  if (!adminKey) return false;
-  const supplied = req.headers["x-admin-key"];
-  return supplied && supplied === adminKey;
-}
+const { adminAuthorized } = require("../utils/adminAuth");
 
 // GET /wallet — ملخص محفظة الصنايعي + حركاته
 async function getWallet(req) {
@@ -104,14 +96,30 @@ async function adminCommissions(req) {
   const db = require("../db");
   const providers = await db.all(
     `SELECT pp.id AS provider_id, u.name, u.phone_number,
-       w.unpaid_commission, w.total_commission, w.total_earned,
-       CASE WHEN w.unpaid_commission > 0 THEN 1 ELSE 0 END AS blocked
-     FROM provider_profiles pp
-     JOIN users u ON u.id = pp.user_id
-     LEFT JOIN provider_wallets w ON w.provider_id = pp.id
-     WHERE u.is_active = 1
-     ORDER BY w.unpaid_commission DESC`
+        w.unpaid_commission, w.total_commission, w.total_earned,
+        CASE WHEN w.unpaid_commission > 0 THEN 1 ELSE 0 END AS blocked
+      FROM provider_profiles pp
+      JOIN users u ON u.id = pp.user_id
+      LEFT JOIN provider_wallets w ON w.provider_id = pp.id
+      WHERE u.is_active = 1
+      ORDER BY w.unpaid_commission DESC`
   );
+  // المهن اللي كل صنايعي شغال فيها (ممكن يكون أكتر من مهنة) — بنعرضها
+  // تحت اسمه وفلوسه في شاشة إدارة الدفعات.
+  const categoryRows = await db.all(
+    `SELECT pc.provider_id AS provider_id, c.name_ar AS name_ar
+      FROM provider_categories pc
+      JOIN categories c ON c.id = pc.category_id
+      ORDER BY c.name_ar`
+  );
+  const categoriesByProvider = new Map();
+  for (const row of categoryRows) {
+    if (!categoriesByProvider.has(row.provider_id)) categoriesByProvider.set(row.provider_id, []);
+    categoriesByProvider.get(row.provider_id).push(row.name_ar);
+  }
+  for (const p of providers) {
+    p.categories = categoriesByProvider.get(p.provider_id) || [];
+  }
   const pendingPayments = await db.all(
     "SELECT * FROM commission_payments WHERE status = 'pending_confirmation' ORDER BY created_at DESC"
   );
@@ -137,4 +145,4 @@ async function clearWalletTransactions(req) {
   return { status: 200, data: { cleared: res.changes || 0 } };
 }
 
-module.exports = { getWallet, payCommission, confirmCommission, adminCommissions, clearWalletTransactions };
+module.exports = { getWallet, payCommission, confirmCommission, adminCommissions, clearWalletTransactions, adminAuthorized };

@@ -11,6 +11,11 @@ const hub = require("../ws/hub");
 const walletService = require("../wallet");
 const fcm = require("../notifications/fcm");
 const { getSchemaByCategoryName } = require("../pricing");
+const { getDefaultPrice, estimateRequestPrice, getMinPrice } = require("../defaultPrices");
+
+// أقصى مسافة (كم) بين العميل والصنايعي عشان الطلب المفتوح يوصل له.
+// الطلب مبيوصلش لكل صنايعية المهنة على التطبيق، بس اللي مسافتهم ≤ الرقم ده.
+const SERVICE_RADIUS_KM = 20;
 
 const VALID_TRANSITIONS = {
   pending: ["accepted", "cancelled"],
@@ -35,6 +40,38 @@ function safeParseJson(str) {
   } catch (_) {
     return null;
   }
+}
+
+// وصف مختصر للبند/البنود المختارة في الطلب (للعرض في الإشعارات)
+function buildRequestDetailsText(categoryName, orderDetails, description) {
+  const schema = getSchemaByCategoryName(categoryName);
+  if (schema && orderDetails && typeof orderDetails === "object") {
+    const parts = [];
+    for (const item of schema.items) {
+      const qty = Number(orderDetails[item.key]);
+      if (Number.isFinite(qty) && qty > 0) {
+        parts.push(`${item.label_ar}: ${qty} ${item.unit_ar}`);
+      }
+    }
+    if (parts.length) return parts.join("، ");
+  }
+  return String(description || "").trim();
+}
+
+// بنود الطلب المختارة مع أسمائها ووحداتها وكمياتها (للعرض في قالب المزاد).
+// بتستخدم مخطط المهنة عشان تحوّل مفاتيح البنود لأسماء عربية.
+function resolveOrderItems(categoryName, orderDetails) {
+  const details = typeof orderDetails === "string" ? safeParseJson(orderDetails) : orderDetails;
+  const schema = getSchemaByCategoryName(categoryName);
+  if (!schema || !details || typeof details !== "object") return [];
+  const out = [];
+  for (const item of schema.items) {
+    const qty = Number(details[item.key]);
+    if (Number.isFinite(qty) && qty > 0) {
+      out.push({ key: item.key, label_ar: item.label_ar, unit_ar: item.unit_ar, qty });
+    }
+  }
+  return out;
 }
 
 // التحقق من أسعار الصنايعي مقابل مخطط المهنة: كل بند إجباري ورقم ≥ 0.
@@ -105,7 +142,7 @@ async function getProviderCategoriesWithSchema(providerId, rates) {
       id: row.id,
       name_ar: row.name_ar,
       icon: row.icon,
-      pricing_items: schema ? schema.items : [],
+      pricing_items: schema ? schema.items.map((item) => ({ ...item, default_price: getDefaultPrice(row.name_ar, item.key) })) : [],
       rates: rates ? ratesForCategory(rates, row.id) : {},
     };
   });
@@ -142,6 +179,25 @@ function haversineKm(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// كل الصنايعية المتاحين في مهنة معيّنة اللي مسافتهم من نقطة معيّنة
+// (العميل) ≤ radiusKm. بترجع provider_id + user_id + distance_km.
+// الصنايعي من غير موقع (current_lat/lng = null) مبيتحسبش قريب.
+async function nearbyCategoryProviders(categoryId, lat, lng, radiusKm = SERVICE_RADIUS_KM) {
+  const rows = await db.all(
+    `SELECT pp.id AS provider_id, pp.user_id AS user_id,
+            pp.current_lat AS current_lat, pp.current_lng AS current_lng
+     FROM provider_categories pc
+     JOIN provider_profiles pp ON pp.id = pc.provider_id
+     JOIN users u ON u.id = pp.user_id
+     WHERE pc.category_id = ? AND pp.is_available = 1 AND u.is_active = 1`,
+    [categoryId]
+  );
+  return rows
+    .filter((p) => p.current_lat != null && p.current_lng != null)
+    .map((p) => ({ ...p, distance_km: haversineKm(lat, lng, p.current_lat, p.current_lng) }))
+    .filter((p) => p.distance_km <= radiusKm);
+}
+
 // ---------------------------------------------------------------
 // GET /categories — مع بنود تسعير كل مهنة (pricing_items) عشان
 // شاشتين التطبيق (أسعار الصنايعي + تفاصيل طلب العميل) يتبنوا ديناميكيًا.
@@ -150,7 +206,14 @@ async function listCategories(req) {
   const categories = await db.all("SELECT id, name_ar, icon FROM categories");
   const data = categories.map((c) => {
     const schema = getSchemaByCategoryName(c.name_ar);
-    return { ...c, pricing_items: schema ? schema.items : null };
+    return {
+      ...c,
+      // السعر التقديري (تقريبي للسوق المصري) لكل بند، مع "يبدأ من" للمهنة
+      start_price: getMinPrice(c.name_ar),
+      pricing_items: schema
+        ? schema.items.map((item) => ({ ...item, default_price: getDefaultPrice(c.name_ar, item.key) }))
+        : null,
+    };
   });
   return { status: 200, data: { categories: data } };
 }
@@ -723,7 +786,13 @@ async function getOrder(req, res, body, query, orderId) {
   const viewerIsProviderSide = isAssignedProvider || isEligibleProvider;
   // الكلينت شايف طلبه برا المنطق ده — حتى لو هو صنايعي معيّن لنفسه
   // (حساب both): ميتحظرش ولا بتتحسب عليه عمولة وهو بيبص في طلباته كعميل.
-  if (viewerIsProviderSide && !viewAsClient && order.status === "pending" && viewerProvider) {
+  //
+  // الشغلانة "لمبدأ الشغل" = لسه pending أو accepted ومن غير عمولة مسجّلة
+  // عليها لسه وقبل ما ندخل مرحلة التنفيذ. فالصنايعي عليه مستحقات عمولة ما
+  // ينفعش يخش شغلانة جديدة (حتى في فلو عروض الأسعار) — لحد ما يسدّد.  // الشغلانة اللي عمولتها اتسجلت أصلًا (أو اللي دخلت on_way..) تفضل
+  // متاحة عشان يخلّصها ويستلم من غير ما نحبسه في نص شغل.
+  const isPreStartOrder = order.status === "pending" || order.status === "accepted";
+  if (viewerIsProviderSide && !viewAsClient && viewerProvider && isPreStartOrder && order.commission_charged_at == null) {
     const block = await walletService.getBlockStatus(viewerProvider.id);
     if (block.blocked) {
       return {
@@ -903,12 +972,23 @@ async function updateAvailability(req, res, body) {
   // "<category_id>:<item_key>" عشان ميحصلش تعارض بين مفاتيح المهن.
   const asNamespaced = {};
   let hasRates = false;
+  // الأسعار بقت اختيارية: التطبيق دلوقتي بيختار المهن من غير ما يسجّل
+  // أسعار (السعر بيتحدد في العروض على الطلب نفسه). لو مفيش أسعار
+  // مبعوتة بنسجّل المهن وبس، وبنفضّي أي أسعار قديمة.
+  const hasPricingInput =
+    pricing_data != null &&
+    typeof pricing_data === "object" &&
+    !Array.isArray(pricing_data) &&
+    Object.keys(pricing_data).length > 0;
 
   if (categoryIds && categoryIds.length > 0) {
-    // اختيار/تغيير المهن — كل مهنة بنتحقق من بنودها وكل خانة إجبارية.
+    // اختيار/تغيير المهن.
     for (const categoryId of categoryIds) {
       const cat = await db.get("SELECT * FROM categories WHERE id = ?", [categoryId]);
       if (!cat) return { status: 400, data: { error: "invalid_category" } };
+
+      // لو مفيش أسعار مبعوتة مع المهن، بنسجّل المهنة من غير تحقق من بنودها.
+      if (!hasPricingInput) continue;
 
       const schema = getSchemaByCategoryName(cat.name_ar);
       if (!schema) {
@@ -938,7 +1018,7 @@ async function updateAvailability(req, res, body) {
         categoryId,
       ]);
     }
-  } else if (pricing_data != null) {
+  } else if (hasPricingInput) {
     // تحديث أسعار المهن الحالية من غير تغييرها.
     const currentCats = await db.all(
       `SELECT c.id AS category_id, c.name_ar
@@ -991,6 +1071,13 @@ async function updateAvailability(req, res, body) {
     await db.run(
       "UPDATE provider_profiles SET pricing_data = ?, hourly_rate = ? WHERE id = ?",
       [JSON.stringify(asNamespaced), Number.isFinite(minRate) ? minRate : 0, provider.id]
+    );
+  } else if (categoryIds && categoryIds.length > 0) {
+    // المهن اتغيّرت من غير أسعار — بنفضّي أي أسعار قديمة عشان ميفضلش
+    // سعر مخلف من مهن مش مختارة دلوقتي.
+    await db.run(
+      "UPDATE provider_profiles SET pricing_data = '{}', hourly_rate = 0 WHERE id = ?",
+      [provider.id]
     );
   }
 
@@ -1122,6 +1209,14 @@ async function clearCompletedOrders(req) {
       [payload.sub]
     );
     cleared += r.changes || 0;
+    // مع الطلبات المكتملة: نخفي كمان طلبات عروض الأسعار المقفولة
+    // (waiting_for_quotes خلصت — بقت accepted). بس اللي لسه مفتوح
+    // نسيبه زي ما هو.
+    const sr = await db.run(
+      "UPDATE service_requests SET hidden_from_client = 1 WHERE client_id = ? AND status != 'waiting_for_quotes' AND (hidden_from_client IS NULL OR hidden_from_client = 0)",
+      [payload.sub]
+    );
+    cleared += sr.changes || 0;
   }
   if ((payload.user_type === "provider" || payload.user_type === "both") && provider) {
     const r = await db.run(
@@ -1132,6 +1227,408 @@ async function clearCompletedOrders(req) {
   }
 
   return { status: 200, data: { cleared } };
+}
+
+// ---------------------------------------------------------------
+// GET/POST /service-requests — طلبات العملاء التي تنتظر أسعارًا من
+// الصنايعية. الطلب مفتوح، وكل صنايعي يضيف عرضه دون تحديد الطلب مسبقًا.
+// ---------------------------------------------------------------
+async function createServiceRequest(req, res, body) {
+  const payload = await requireAuth(req);
+  if (payload.user_type !== "client" && payload.user_type !== "both") {
+    return { status: 403, data: { error: "client_account_required" } };
+  }
+
+  const { category_id, address_text, lat, lng, description, order_details } = body;
+  if (!category_id || !address_text || lat == null || lng == null || !String(description || "").trim()) {
+    return { status: 400, data: { error: "category_address_lat_lng_description_required" } };
+  }
+  if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
+    return { status: 400, data: { error: "invalid_location" } };
+  }
+
+  const category = await db.get("SELECT id, name_ar FROM categories WHERE id = ?", [category_id]);
+  if (!category) return { status: 404, data: { error: "category_not_found" } };
+
+  // السعر التقديري (نقطة انطلاق العميل): لو العميل بعت suggested_price نستخدمه،
+  // وإلا بنحسبه من البنود المختارة × الأسعار التقريبية للسوق المصري.
+  let price = Number(body.suggested_price);
+  if (!Number.isFinite(price) || price <= 0) {
+    price = estimateRequestPrice(category.name_ar, order_details).estimated || null;
+  } else {
+    price = round2(price);
+  }
+  if (price != null && price <= 0) price = null;
+
+  const id = uuid();
+  await db.run(
+    `INSERT INTO service_requests
+     (id, client_id, category_id, status, description, address_text, lat, lng, order_details, price)
+     VALUES (?, ?, ?, 'waiting_for_quotes', ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      payload.sub,
+      category_id,
+      description.trim(),
+      address_text.trim(),
+      Number(lat),
+      Number(lng),
+      order_details ? JSON.stringify(order_details) : null,
+      price,
+    ]
+  );
+  const request = await db.get("SELECT * FROM service_requests WHERE id = ?", [id]);
+  const client = await db.get("SELECT name FROM users WHERE id = ?", [payload.sub]);
+
+  // بث الطلب لحظيًا لكل الصنايعية المتاحين في نفس المهنة (من الـ WebSocket)
+  const broadcastPayload = {
+    type: "new_service_request",
+    request: {
+      id: request.id,
+      category_id: request.category_id,
+      category_name: category.name_ar,
+      client_name: (client && client.name) || "عميل",
+      description: request.description,
+      address_text: request.address_text,
+      lat: request.lat,
+      lng: request.lng,
+      price: request.price,
+      order_details: safeParseJson(request.order_details),
+      created_at: request.created_at,
+    },
+  };
+  // الصنايعية القريبين بس (نفس المهنة وجوه نطاق SERVICE_RADIUS_KM من
+  // العميل) — الطلب مبيوصلش لكل صنايعية المهنة على التطبيق.
+  const nearby = await nearbyCategoryProviders(
+    request.category_id,
+    Number(lat),
+    Number(lng),
+    SERVICE_RADIUS_KM
+  );
+
+  // بث لحظي على قناة كل صنايعي قريب (الشاشة بتسمع لـ provider:{id}:incoming)
+  for (const p of nearby) {
+    hub.publish(`provider:${p.provider_id}:incoming`, broadcastPayload);
+  }
+  // قناة المهنة تفضل للتوافق مع أي عميل بيسمع عليها
+  hub.publish(`orders:available:cat:${request.category_id}`, broadcastPayload);
+
+  // إشعار push على تليفونات الصنايعية القريبين بس
+  const detailsText = buildRequestDetailsText(category.name_ar, safeParseJson(request.order_details), request.description);
+  if (nearby.length) {
+    fcm.sendToUsers(
+      nearby.map((p) => p.user_id),
+      {
+        title: "🔔 طلب جديد في مهنتك",
+        body: `${detailsText} — ${request.address_text}`,
+        data: { type: "new_service_request", service_request_id: request.id, category_id: request.category_id },
+      }
+    );
+  }
+
+  return { status: 201, data: { ...request, category_name: category.name_ar } };
+}
+
+async function listServiceRequests(req) {
+  const payload = await requireAuth(req);
+  const requests = await db.all(
+    `SELECT sr.*, c.name_ar AS category_name,
+        (SELECT COUNT(*) FROM service_request_quotes q WHERE q.service_request_id = sr.id AND q.status = 'pending') AS quote_count,
+        (SELECT AVG(q.price) FROM service_request_quotes q WHERE q.service_request_id = sr.id AND q.status = 'pending') AS average_price
+     FROM service_requests sr
+     JOIN categories c ON c.id = sr.category_id
+     WHERE sr.client_id = ? AND (sr.hidden_from_client IS NULL OR sr.hidden_from_client = 0)
+     ORDER BY sr.created_at DESC`,
+    [payload.sub]
+  );
+  return { status: 200, data: { requests, total: requests.length } };
+}
+
+async function availableServiceRequests(req) {
+  const payload = await requireAuth(req);
+  requireUserType(payload, ["provider", "both"]);
+
+  const provider = await db.get("SELECT * FROM provider_profiles WHERE user_id = ?", [payload.sub]);
+  if (!provider) return { status: 403, data: { error: "not_a_provider" } };
+  if (!provider.is_available) return { status: 409, data: { error: "provider_not_available" } };
+
+  const categoryIds = await db.all(
+    "SELECT category_id FROM provider_categories WHERE provider_id = ?",
+    [provider.id]
+  );
+  const requestedIds = categoryIds.map((row) => row.category_id);
+  if (!requestedIds.length) return { status: 200, data: { requests: [], total: 0 } };
+
+  const placeholders = requestedIds.map(() => "?").join(", ");
+  const rows = await db.all(
+    `SELECT sr.*, c.name_ar AS category_name, u.name AS client_name,
+            (SELECT COUNT(*) FROM service_request_quotes q WHERE q.service_request_id = sr.id AND q.status = 'pending') AS quote_count,
+            (SELECT AVG(q.price) FROM service_request_quotes q WHERE q.service_request_id = sr.id AND q.status = 'pending') AS average_price
+     FROM service_requests sr
+     JOIN categories c ON c.id = sr.category_id
+     JOIN users u ON u.id = sr.client_id
+     WHERE sr.status = 'waiting_for_quotes' AND sr.category_id IN (${placeholders})
+     ORDER BY sr.created_at DESC`,
+    requestedIds
+  );
+
+  // فلترة بالمسافة: الصنايعي يشوف بس الطلبات اللي جوه نطاق SERVICE_RADIUS_KM
+  // من موقعه. الصنايعي اللي مفيش له موقع محفوظ ميشوفش طلبات (لازم يحدّد موقعه).
+  let requests = [];
+  if (provider.current_lat != null && provider.current_lng != null) {
+    requests = rows
+      .map((r) => ({
+        ...r,
+        items: resolveOrderItems(r.category_name, r.order_details),
+        distance_km:
+          r.lat != null && r.lng != null
+            ? Math.round(haversineKm(provider.current_lat, provider.current_lng, r.lat, r.lng) * 10) / 10
+            : null,
+      }))
+      .filter((r) => r.distance_km != null && r.distance_km <= SERVICE_RADIUS_KM)
+      .sort((a, b) => a.distance_km - b.distance_km);
+  }
+  return { status: 200, data: { requests, total: requests.length } };
+}
+
+async function getServiceRequestQuotes(req, query, requestId) {
+  const payload = await requireAuth(req);
+  const request = await db.get("SELECT * FROM service_requests WHERE id = ?", [requestId]);
+  if (!request) return { status: 404, data: { error: "service_request_not_found" } };
+  if (request.client_id !== payload.sub && payload.user_type !== "provider" && payload.user_type !== "both") {
+    return { status: 403, data: { error: "not_authorized" } };
+  }
+
+  const rawQuotes = await db.all(
+    `SELECT q.*, pp.id AS provider_profile_id, u.name AS provider_name,
+            pp.current_lat AS provider_lat, pp.current_lng AS provider_lng,
+            EXISTS (
+              SELECT 1 FROM provider_wallets w
+              WHERE w.provider_id = pp.id AND w.unpaid_commission > 0
+            ) AS provider_blocked
+     FROM service_request_quotes q
+     JOIN provider_profiles pp ON pp.id = q.provider_id
+     JOIN users u ON u.id = pp.user_id
+     WHERE q.service_request_id = ? AND q.status = 'pending'
+     ORDER BY q.created_at DESC`,
+    [requestId]
+  );
+  // مسافة كل صنايعي عن العميل (كم) عشان تتعرض تحت سعر عرضه.
+  const quotes = rawQuotes.map((q) => {
+    const distance_km =
+      request.lat != null && request.lng != null && q.provider_lat != null && q.provider_lng != null
+        ? Math.round(haversineKm(request.lat, request.lng, q.provider_lat, q.provider_lng) * 10) / 10
+        : null;
+    // provider_blocked بيجي 0/1 من SQLite و true/false من Postgres — نوحّده boolean
+    const provider_blocked = q.provider_blocked === true || Number(q.provider_blocked) === 1;
+    return { ...q, distance_km, provider_blocked };
+  });
+  const prices = quotes.map((q) => Number(q.price)).filter(Number.isFinite);
+  const averagePrice = prices.length ? Math.round(prices.reduce((sum, value) => sum + value, 0) / prices.length * 100) / 100 : null;
+  return {
+    status: 200,
+    data: {
+      request,
+      quotes,
+      quote_count: quotes.length,
+      average_price: averagePrice,
+      lowest_price: prices.length ? Math.min(...prices) : null,
+      highest_price: prices.length ? Math.max(...prices) : null,
+    },
+  };
+}
+
+async function submitServiceRequestQuote(req, res, body, requestId) {
+  const payload = await requireAuth(req);
+  requireUserType(payload, ["provider", "both"]);
+
+  const request = await db.get("SELECT * FROM service_requests WHERE id = ?", [requestId]);
+  if (!request) return { status: 404, data: { error: "service_request_not_found" } };
+  if (request.status !== "waiting_for_quotes") return { status: 409, data: { error: "service_request_not_waiting_for_quotes" } };
+
+  const provider = await db.get("SELECT * FROM provider_profiles WHERE user_id = ?", [payload.sub]);
+  if (!provider) return { status: 403, data: { error: "not_a_provider" } };
+  // مينفعش يقدّم عرض وهو عليه مستحقات عمولة: العرض مبيتبعتش أصلًا، فالعميل
+  // مش هيشوفه ولا هيشوف عرضه — لحد ما يسدّد المستحقات من المحفظة الأول.
+  const quoteBlock = await walletService.getBlockStatus(provider.id);
+  if (quoteBlock.blocked) {
+    return {
+      status: 403,
+      data: { error: "commission_unpaid", unpaid_commission: quoteBlock.unpaid_commission, threshold: quoteBlock.threshold },
+    };
+  }
+  if (!provider.is_available) return { status: 409, data: { error: "provider_not_available" } };
+  const categoryMatch = await db.get(
+    "SELECT 1 FROM provider_categories WHERE provider_id = ? AND category_id = ?",
+    [provider.id, request.category_id]
+  );
+  if (!categoryMatch) return { status: 403, data: { error: "provider_not_registered_for_category" } };
+
+  // لو مفيش سعر محدد من الصنايعي، معناه إنه "قبل بسعر العميل" (request.price).
+  // السعر بيبقى عرض بديل من الصنايعي مش بتاع العميل.
+  let price = Number(body.price);
+  if (!Number.isFinite(price) || price <= 0) {
+    price = Number(request.price);
+    if (!Number.isFinite(price) || price <= 0) {
+      return { status: 400, data: { error: "positive_price_required" } };
+    }
+  }
+  price = round2(price);
+  let estimatedHours = Number(body.estimated_hours);
+  if (!Number.isFinite(estimatedHours) || estimatedHours <= 0) estimatedHours = 1;
+  if (body.notes && String(body.notes).length > 500) {
+    return { status: 400, data: { error: "notes_too_long" } };
+  }
+
+  const id = uuid();
+  const now = new Date().toISOString();
+  await db.run(
+    `INSERT INTO service_request_quotes
+     (id, service_request_id, provider_id, price, estimated_hours, notes, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+     ON CONFLICT(service_request_id, provider_id) DO UPDATE SET
+       price = excluded.price, estimated_hours = excluded.estimated_hours,
+       notes = excluded.notes, status = 'pending', updated_at = excluded.updated_at`,
+    [id, requestId, provider.id, price, estimatedHours, body.notes || null, now, now]
+  );
+  const quote = await db.get(
+    "SELECT * FROM service_request_quotes WHERE service_request_id = ? AND provider_id = ?",
+    [requestId, provider.id]
+  );
+  // العميل يستلم التحديث في شاشة انتظار العروض (بما فيهم المتوسط التقديري)
+  hub.publish(`service-request:${requestId}:quotes`, { type: "quote_added", quote, request_price: request.price });
+  // إشعار push للعميل إن في عرض سعر جديد وصل
+  fcm.sendToUser(request.client_id, {
+    title: "💬 عرض سعر جديد",
+    body: `وصل عرض جديد على طلبك — ${price} ج.م`,
+    data: { type: "quote_added", service_request_id: requestId },
+  });
+  return { status: 201, data: quote };
+}
+
+async function confirmServiceRequestQuote(req, res, body, requestId) {
+  const payload = await requireAuth(req);
+  if (payload.user_type !== "client" && payload.user_type !== "both") {
+    return { status: 403, data: { error: "client_account_required" } };
+  }
+
+  const request = await db.get("SELECT * FROM service_requests WHERE id = ?", [requestId]);
+  if (!request) return { status: 404, data: { error: "service_request_not_found" } };
+  if (request.client_id !== payload.sub) return { status: 403, data: { error: "not_authorized" } };
+  if (request.status !== "waiting_for_quotes") return { status: 409, data: { error: "service_request_not_waiting_for_quotes" } };
+
+  const quote = await db.get(
+    `SELECT q.*, pp.user_id AS provider_user_id
+     FROM service_request_quotes q
+     JOIN provider_profiles pp ON pp.id = q.provider_id
+     WHERE q.id = ? AND q.service_request_id = ? AND q.status = 'pending'`,
+    [body.quote_id, requestId]
+  );
+  if (!quote) return { status: 404, data: { error: "quote_not_found" } };
+
+  const adjustmentSteps = Number(body.price_adjustment || 0);
+  if (!Number.isInteger(adjustmentSteps) || adjustmentSteps < 0) {
+    return { status: 400, data: { error: "price_adjustment_must_be_non_negative_integer" } };
+  }
+  const price = round2(Number(quote.price) + adjustmentSteps * 5);
+  if (!price || price <= 0) return { status: 400, data: { error: "invalid_price" } };
+
+  // الصنايعي اللي عليه مستحقات عمولة للمنصة مينفعش العميل يأكد عرضه —
+  // العرض اللي بعته قبل ما تنزل عليه المستحقات (طلب اكتمل / عمولة فتح طلب)
+  // ميبقاش صالح للتأكيد لحد ما يسدد، والعميل يرجع يختار غيره.
+  const providerBlock = await walletService.getBlockStatus(quote.provider_id);
+  if (providerBlock.blocked) {
+    return {
+      status: 409,
+      data: {
+        error: "provider_commission_unpaid",
+        unpaid_commission: providerBlock.unpaid_commission,
+        threshold: providerBlock.threshold,
+      },
+    };
+  }
+
+  const orderId = uuid();
+  await db.run(
+    `INSERT INTO orders
+     (id, client_id, provider_id, category_id, status, price, price_estimated,
+      hours, hourly_rate, address_text, lat, lng, notes, order_details)
+     VALUES (?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      orderId,
+      payload.sub,
+      quote.provider_id,
+      request.category_id,
+      price,
+      price,
+      quote.estimated_hours,
+      null,
+      request.address_text,
+      request.lat,
+      request.lng,
+      request.description,
+      request.order_details,
+    ]
+  );
+  await db.run(
+    `UPDATE service_requests
+     SET status = 'accepted', provider_id = ?, price = ?, estimated_hours = ?, quote_id = ?, accepted_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    [quote.provider_id, price, quote.estimated_hours, quote.id, requestId]
+  );
+  await db.run(
+    `UPDATE service_request_quotes SET status = 'accepted', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [quote.id]
+  );
+  await db.run("INSERT INTO order_status_log (order_id, status, changed_by) VALUES (?, 'accepted', ?)", [orderId, payload.sub]);
+  hub.publish(`service-request:${requestId}:quotes`, { type: "quote_accepted", quote_id: quote.id, price });
+  hub.publish(`order:${orderId}:tracking`, { type: "status", status: "accepted", price });
+  // الإعلان لبقية الصنايعية إن الطلب اترتبط بصنايعي (يتشال من قايمة المتاح)
+  hub.publish(`orders:available:cat:${request.category_id}`, {
+    type: "request_taken",
+    service_request_id: requestId,
+    provider_profile_id: quote.provider_id,
+  });
+  // إشعار للصنايعي اللي اترشّح — يبدأ الشغل
+  fcm.sendToUser(quote.provider_user_id, {
+    title: "🎉 تم اختيارك",
+    body: `العميل اختار عرضك — الشغلانة بقت مضمونة لك. اتواصل معاه وابدأ`,
+    data: { type: "order_assigned", order_id: orderId },
+  });
+  const accepted = await db.get("SELECT * FROM service_requests WHERE id = ?", [requestId]);
+  return { status: 200, data: { ...accepted, order_id: orderId, price_adjustment_steps: adjustmentSteps } };
+}
+
+// ---------------------------------------------------------------
+// POST /service-requests/:id/price-bump
+// العميل يزوّد سعر عرضه +5 جنيه لما المزادات كلها تكون أعلى من اللي
+// عيزه — زي نظام inDrive. التحديث بيتبث لحظيًا لكل الصنايعية
+// المتابعين في قناة الطلب / قناة المهنة.
+// ---------------------------------------------------------------
+async function bumpServiceRequestPrice(req, res, body, requestId) {
+  const payload = await requireAuth(req);
+  if (payload.user_type !== "client" && payload.user_type !== "both") {
+    return { status: 403, data: { error: "client_account_required" } };
+  }
+
+  const request = await db.get("SELECT * FROM service_requests WHERE id = ?", [requestId]);
+  if (!request) return { status: 404, data: { error: "service_request_not_found" } };
+  if (request.client_id !== payload.sub) return { status: 403, data: { error: "not_authorized" } };
+  if (request.status !== "waiting_for_quotes") return { status: 409, data: { error: "service_request_not_waiting_for_quotes" } };
+
+  // كل ضغطة بتزوّد 5 جنيه
+  const step = 5;
+  let newPrice = Number(request.price);
+  if (!Number.isFinite(newPrice) || newPrice <= 0) newPrice = 0;
+  newPrice = round2(newPrice + step);
+
+  await db.run("UPDATE service_requests SET price = ? WHERE id = ?", [newPrice, requestId]);
+  const updated = await db.get("SELECT * FROM service_requests WHERE id = ?", [requestId]);
+  const payloadMsg = { type: "request_price_bumped", price: newPrice, request: updated };
+  hub.publish(`service-request:${requestId}:quotes`, payloadMsg);
+  hub.publish(`orders:available:cat:${request.category_id}`, payloadMsg);
+
+  return { status: 200, data: { ...updated, bumped_by: step } };
 }
 
 module.exports = {
@@ -1155,6 +1652,13 @@ module.exports = {
   addCustomService,
   deleteCustomService,
   getMyCustomServices,
+  createServiceRequest,
+  listServiceRequests,
+  availableServiceRequests,
+  getServiceRequestQuotes,
+  submitServiceRequestQuote,
+  confirmServiceRequestQuote,
+  bumpServiceRequestPrice,
 };
 
 // ---------------------------------------------------------------

@@ -23,10 +23,16 @@ async function requireAuth(req) {
   // بيتأكد من حالة الحساب من قاعدة البيانات (مش التوكن بس) — لو الحساب
   // اتحذف أو اتعطّل (is_active = 0) يبطل يشتغل فورًا حتى لو التوكن لسه
   // صالح، فمحدش يقدر يستخدم الحساب بعد طلب الحذف.
-  const user = await db.get("SELECT is_active FROM users WHERE id = ?", [payload.sub]);
+  const user = await db.get("SELECT is_active, is_banned FROM users WHERE id = ?", [payload.sub]);
   if (!user || !user.is_active) {
     const err = new Error("account_deactivated");
     err.statusCode = 401;
+    throw err;
+  }
+  // الحظر الإداري: حتى لو التوكن لسه صالح، الحساب المحظور مبيشتغلش خالص.
+  if (user.is_banned) {
+    const err = new Error("account_banned");
+    err.statusCode = 403;
     throw err;
   }
   return payload;

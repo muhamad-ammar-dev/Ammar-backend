@@ -48,6 +48,8 @@ const auth = require("./routes/auth");
 const orders = require("./routes/orders");
 const wallet = require("./routes/wallet");
 const devices = require("./routes/devices");
+const reports = require("./routes/reports");
+const admin = require("./routes/admin");
 const fcm = require("./notifications/fcm");
 const { loadFirebaseConfig } = require("./utils/firebaseConfig");
 
@@ -82,6 +84,17 @@ const routes = [
   { method: "GET", pattern: /^\/orders$/, handler: (req, res, body, query) => orders.listOrders(req, query) },
   { method: "POST", pattern: /^\/orders\/clear-completed$/, handler: (req, res, body) => orders.clearCompletedOrders(req, res, body) },
   { method: "GET", pattern: /^\/orders\/available$/, handler: (req) => orders.availableOrders(req) },
+  { method: "POST", pattern: /^\/service-requests$/, handler: (req, res, body) => orders.createServiceRequest(req, res, body) },
+  { method: "GET", pattern: /^\/service-requests$/, handler: (req) => orders.listServiceRequests(req) },
+  { method: "GET", pattern: /^\/service-requests\/available$/, handler: (req) => orders.availableServiceRequests(req) },
+  { method: "GET", pattern: /^\/service-requests\/([^/]+)\/quotes$/, handler: (req, res, body, query, id) => orders.getServiceRequestQuotes(req, query, id) },
+  { method: "POST", pattern: /^\/service-requests\/([^/]+)\/quotes$/, handler: (req, res, body, query, id) => orders.submitServiceRequestQuote(req, res, body, id) },
+  { method: "POST", pattern: /^\/service-requests\/([^/]+)\/confirm$/, handler: (req, res, body, query, id) => orders.confirmServiceRequestQuote(req, res, body, id) },
+  {
+    method: "POST",
+    pattern: /^\/service-requests\/([^/]+)\/price-bump$/,
+    handler: (req, res, body, query, id) => orders.bumpServiceRequestPrice(req, res, body, id),
+  },
   {
     method: "PATCH",
     pattern: /^\/providers\/me\/availability$/,
@@ -134,6 +147,16 @@ const routes = [
   { method: "POST", pattern: /^\/wallet\/commission\/pay$/, handler: (req, res, body) => wallet.payCommission(req, res, body) },
   { method: "POST", pattern: /^\/wallet\/commission\/confirm$/, handler: (req, res, body) => wallet.confirmCommission(req, res, body) },
   { method: "GET", pattern: /^\/admin\/commissions$/, handler: (req) => wallet.adminCommissions(req) },
+
+  // لوحة الإدارة الموسعة: إبلاغات/مستخدمين
+  { method: "GET", pattern: /^\/admin\/reports$/, handler: (req, res, body, query) => admin.listReports(req, res, body, query) },
+  { method: "PATCH", pattern: /^\/admin\/reports\/([^/]+)$/, handler: (req, res, body, query, id) => admin.updateReport(req, res, body, query, id) },
+  { method: "GET", pattern: /^\/admin\/users$/, handler: (req, res, body, query) => admin.listUsers(req, res, body, query) },
+  { method: "POST", pattern: /^\/admin\/users\/([^/]+)\/ban$/, handler: (req, res, body, query, id) => admin.banUser(req, res, body, query, id) },
+  { method: "POST", pattern: /^\/admin\/users\/([^/]+)\/unban$/, handler: (req, res, body, query, id) => admin.unbanUser(req, res, body, query, id) },
+
+  // إبلاغات/شكاوى المستخدمين
+  { method: "POST", pattern: /^\/reports$/, handler: (req, res, body) => reports.createReport(req, res, body) },
 
   // إشعارات الدفع (FCM) — تسجيل أجهزة
   { method: "POST", pattern: /^\/devices\/fcm$/, handler: (req, res, body) => devices.registerDevice(req, res, body) },
@@ -295,6 +318,20 @@ attachWebSocketServer(server, (conn, req) => {
           }
           conn.send(JSON.stringify({ type: "subscribed", channel }));
           return;
+        } else if (/^service-request:(.+):quotes$/.test(channel)) {
+          // قناة عروض أسعار طلب مفتوح: صاحب الطلب (العميل) أو أي صنايعي
+          // مسجل يقدر يتابعها عشان يشوف العروض لحظيًا. أي حد تاني ممنوع.
+          const requestId = /^service-request:(.+):quotes$/.exec(channel)[1];
+          const sr = await db.get("SELECT client_id FROM service_requests WHERE id = ?", [requestId]);
+          const isOwner = sr && sr.client_id === userId;
+          const isProvider = await db.get(
+            "SELECT 1 FROM provider_profiles WHERE user_id = ?",
+            [userId]
+          );
+          if (!sr || (!isOwner && !isProvider)) {
+            conn.send(JSON.stringify({ type: "error", error: "not_authorized_for_this_request" }));
+            return;
+          }
         } else if (channel === "providers:available") {
           // تغيّر توفر الصنايعية: أي مستخدم مسجّل (العميل هو المستهلك الأساسي)
         } else {

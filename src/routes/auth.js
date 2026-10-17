@@ -17,11 +17,13 @@ const { sendOtpEmail } = require("../utils/mailer");
 const { verifyIdToken } = require("../utils/firebaseIdToken");
 
 const OTP_TTL_SECONDS = 300; // 5 دقايق
-const OTP_MAX_REQUESTS_PER_WINDOW = 3;
+// سماحية أعلى عشان التطبيق ما يكسفش المستخدمين اللي بيجربوا أكتر من مرة
+// (كانت 3 بس واللي بتودي لرسالة "حاولت كتير استنى شوية" بسرعة).
+const OTP_MAX_REQUESTS_PER_WINDOW = 10;
 const DELETE_GRACE_DAYS = 30;
 const DELETE_GRACE_MS = DELETE_GRACE_DAYS * 24 * 3600 * 1000;
 const OTP_REQUEST_WINDOW_SECONDS = 600; // 10 دقايق
-const OTP_MAX_VERIFY_ATTEMPTS = 5;
+const OTP_MAX_VERIFY_ATTEMPTS = 10;
 const OTP_VERIFY_LOCK_SECONDS = 900; // 15 دقيقة
 
 // في التطوير ممكن ننظطيب DEV_OTP لثبيت كود معين — بس
@@ -30,6 +32,15 @@ const OTP_VERIFY_LOCK_SECONDS = 900; // 15 دقيقة
 function devOtpCode() {
   if (process.env.NODE_ENV === "production") return null;
   return process.env.DEV_OTP || null;
+}
+
+// الحظر الإداري: الحساب المحظور مينفعش يسجّل دخول خالص، وبنرجّع سبب
+// الحظر مع الرد عشان التطبيق يعرضه للمستخدم.
+function bannedResponse(user) {
+  return {
+    status: 403,
+    data: { error: "account_banned", ban_reason: (user && user.ban_reason) || null },
+  };
 }
 
 // ---------------------------------------------------------------
@@ -124,15 +135,12 @@ async function findOrCreateUserByPhone(phone, name) {
 // POST /auth/verify
 // ---------------------------------------------------------------
 async function verifyOtp(req, res, body) {
-  const { phone_number, otp, name } = body;
+  const { phone_number, otp } = body;
   if (!phone_number || !otp) {
     return { status: 400, data: { error: "phone_number_and_otp_required" } };
   }
-  // الاسم إجباري عند تسجيل الدخول/التسجيل — مفيش حساب من غير اسم.
-  if (!String(name || "").trim()) {
-    return { status: 400, data: { error: "name_required" } };
-  }
   const phone = normalizePhone(phone_number);
+  const name = String(body.name || "").trim() || `مستخدم ${phone}`;
 
   const lockKey = `otp_lock:${phone}`;
   if (await otpStore.getAttempts(lockKey) >= OTP_MAX_VERIFY_ATTEMPTS) {
@@ -152,6 +160,7 @@ async function verifyOtp(req, res, body) {
   await otpStore.resetAttempts(lockKey);
 
   const { user, isNewUser } = await findOrCreateUserByPhone(phone, name);
+  if (user.is_banned) return bannedResponse(user);
 
   const accessToken = jwt.sign({ sub: user.id, user_type: user.user_type }, 3600);
   const refreshToken = uuid();
@@ -187,13 +196,9 @@ async function verifyOtp(req, res, body) {
 // يدويًا (من غير firebase-admin) ويبني/يلاقي حساب التطبيق ويرجع نفس
 // شكل الرد بتاع /auth/verify بالظبط.
 async function verifyFirebaseToken(req, res, body) {
-  const { id_token, phone_number, name } = body;
+  const { id_token, phone_number } = body;
   if (!id_token) {
     return { status: 400, data: { error: "id_token_required" } };
-  }
-  // الاسم إجباري هنا كمان — نفس قاعدة تسجيل الدخول برقم الموبايل.
-  if (!String(name || "").trim()) {
-    return { status: 400, data: { error: "name_required" } };
   }
 
   let claims;
@@ -223,7 +228,9 @@ async function verifyFirebaseToken(req, res, body) {
     return { status: 400, data: { error: "phone_number_mismatch" } };
   }
 
+  const name = String(body.name || "").trim() || `مستخدم ${phone}`;
   const { user, isNewUser } = await findOrCreateUserByPhone(phone, name);
+  if (user.is_banned) return bannedResponse(user);
 
   const accessToken = jwt.sign({ sub: user.id, user_type: user.user_type }, 3600);
   const refreshToken = uuid();
@@ -262,6 +269,25 @@ async function requestEmailOtp(req, res, body) {
   const email = String(body.email || "").trim().toLowerCase();
   if (!isValidEmail(email)) {
     return { status: 400, data: { error: "invalid_email" } };
+  }
+
+  // منع استخدام رقم موبايل مسجّل بالفعل على حساب تاني — بنتحقق هنا قبل ما
+  // نبعت الكود عشان المستخدم يعرف فورًا وميكمّلش التسجيل (بدل ما يوصل الكود
+  // وبعدين يتفاجئ إن الرقم محجوز). لو نفس الإيميل ونفس الرقم (صاحب الحساب
+  // بيسجّل دخول) بنسيبه يكمّل عادي.
+  if (body.phone_number) {
+    const rawPhone = String(body.phone_number).trim();
+    if (!isValidEgyptianPhone(rawPhone)) {
+      return { status: 400, data: { error: "invalid_phone_number" } };
+    }
+    const phone = normalizePhone(rawPhone);
+    const phoneUser = await db.get("SELECT id FROM users WHERE phone_number = ?", [phone]);
+    if (phoneUser) {
+      const emailUser = await db.get("SELECT id FROM users WHERE email = ?", [email]);
+      if (!emailUser || emailUser.id !== phoneUser.id) {
+        return { status: 400, data: { error: "phone_number_already_used" } };
+      }
+    }
   }
 
   const rateLimitKey = `email_otp_requests:${email}`;
@@ -408,6 +434,8 @@ async function verifyEmailOtp(req, res, body) {
     }
   }
 
+  if (user.is_banned) return bannedResponse(user);
+
   const accessToken = jwt.sign({ sub: user.id, user_type: user.user_type }, 3600);
   const refreshToken = uuid();
   const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
@@ -451,6 +479,8 @@ async function refresh(req, res, body) {
   if (!user || !user.is_active) {
     return { status: 401, data: { error: "invalid_refresh_token" } };
   }
+  // الحساب المحظور مبيجددش توكن — لازم يرجع للأدمن.
+  if (user.is_banned) return bannedResponse(user);
   const accessToken = jwt.sign({ sub: user.id, user_type: user.user_type }, 3600);
   return { status: 200, data: { access_token: accessToken, expires_in: 3600 } };
 }
