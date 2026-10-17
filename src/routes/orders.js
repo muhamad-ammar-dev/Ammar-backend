@@ -199,11 +199,35 @@ async function nearbyCategoryProviders(categoryId, lat, lng, radiusKm = SERVICE_
 }
 
 // ---------------------------------------------------------------
+// مهن مؤقتة مخفية من الاستعراض (تسجيل صنايعي + اطلب خدمة + محتاج مين).
+// الإخفاء ده سطحي بس: كل بيانات المهنة (مخطط التسعير، البنود، الطلبات،
+// حسابات الصنايعية المسجلة فيها) موجودة في القاعدة زي ما هي. عشان ترجع
+// المهنة تاني احذف اسمها من القائمة دي ودوس deploy.
+// ---------------------------------------------------------------
+const HIDDEN_CATEGORY_NAMES = new Set([
+  "بناء وواجهات حجرية",
+  "باركيه",
+  "حداد",
+  "جبس بلدي ومصيص",
+  "ستائر وتنجيد",
+  "زجاج وسيكوريت",
+  "رخام وجرانيت",
+  "جبسيوم بورد",
+  "نقل اثاث",
+  "ونش تشوين",
+  "تركيب كرانيش فوم",
+  "مكافحة حشرات وقوارض",
+  "حمامات سباحة",
+]);
+
+// ---------------------------------------------------------------
 // GET /categories — مع بنود تسعير كل مهنة (pricing_items) عشان
 // شاشتين التطبيق (أسعار الصنايعي + تفاصيل طلب العميل) يتبنوا ديناميكيًا.
 // ---------------------------------------------------------------
 async function listCategories(req) {
-  const categories = await db.all("SELECT id, name_ar, icon FROM categories");
+  const categories = (await db.all("SELECT id, name_ar, icon FROM categories")).filter(
+    (c) => !HIDDEN_CATEGORY_NAMES.has(c.name_ar)
+  );
   const data = categories.map((c) => {
     const schema = getSchemaByCategoryName(c.name_ar);
     return {
