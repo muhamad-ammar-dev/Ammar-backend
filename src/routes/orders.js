@@ -803,6 +803,7 @@ async function getOrder(req, res, body, query, orderId) {
   }
 
   const images = await db.all("SELECT id, image_base64 FROM order_images WHERE order_id = ?", [orderId]);
+  const orderCategory = await db.get("SELECT name_ar FROM categories WHERE id = ?", [order.category_id]);
 
   // الخصوصية: رقم العميل بيتبعت للصنايعي بس (هو اللي بيكلم العميل)،
   // ورقم الصنايعي مبيتبعتش للعميل نهائيًا من السيرفر.
@@ -817,6 +818,7 @@ async function getOrder(req, res, body, query, orderId) {
   }
   const data = {
     ...order,
+    items: resolveOrderItems(orderCategory?.name_ar, order.order_details),
     images,
     // اسم الصنايعي للعرض فقط — ولو مسح اسمه نعرض "مستخدم"
     provider_name: providerName || "مستخدم",
@@ -859,14 +861,14 @@ async function listOrders(req, query) {
     const provider = await db.get("SELECT * FROM provider_profiles WHERE user_id = ?", [payload.sub]);
     if (!provider) return { status: 200, data: { orders: [] } };
     sql =
-      "SELECT o.*, u.name AS client_name, CASE WHEN o.status = 'pending' THEN NULL ELSE u.phone_number END AS client_phone FROM orders o JOIN users u ON u.id = o.client_id WHERE o.provider_id = ? AND (o.hidden_from_provider IS NULL OR o.hidden_from_provider = 0)";
+      "SELECT o.*, u.name AS client_name, c.name_ar AS category_name, CASE WHEN o.status = 'pending' THEN NULL ELSE u.phone_number END AS client_phone FROM orders o JOIN users u ON u.id = o.client_id JOIN categories c ON c.id = o.category_id WHERE o.provider_id = ? AND (o.hidden_from_provider IS NULL OR o.hidden_from_provider = 0)";
     params = [provider.id];
   } else {
     // قائمة طلبات العميل: اسم الصنايعي + هل قيّم الطلب (rated)
-    sql = `SELECT o.*,
+    sql = `SELECT o.*, c.name_ar AS category_name,
        (SELECT u2.name FROM provider_profiles pp JOIN users u2 ON u2.id = pp.user_id WHERE pp.id = o.provider_id) AS provider_name,
        (SELECT COUNT(*) FROM ratings r WHERE r.order_id = o.id AND r.rating_type = 'client_to_provider') AS rated
-       FROM orders o WHERE o.client_id = ? AND (o.hidden_from_client IS NULL OR o.hidden_from_client = 0)`;
+       FROM orders o JOIN categories c ON c.id = o.category_id WHERE o.client_id = ? AND (o.hidden_from_client IS NULL OR o.hidden_from_client = 0)`;
     params = [payload.sub];
   }
 
@@ -874,9 +876,12 @@ async function listOrders(req, query) {
     sql += " AND status = ?";
     params.push(status);
   }
-  sql += " ORDER BY created_at DESC LIMIT 50";
+  sql += " ORDER BY o.created_at DESC LIMIT 50";
 
-  const orders = await db.all(sql, params);
+  const orders = (await db.all(sql, params)).map((o) => ({
+    ...o,
+    items: resolveOrderItems(o.category_name, o.order_details),
+  }));
   return { status: 200, data: { orders, total: orders.length } };
 }
 
@@ -1331,7 +1336,7 @@ async function createServiceRequest(req, res, body) {
 
 async function listServiceRequests(req) {
   const payload = await requireAuth(req);
-  const requests = await db.all(
+  const requests = (await db.all(
     `SELECT sr.*, c.name_ar AS category_name,
         (SELECT COUNT(*) FROM service_request_quotes q WHERE q.service_request_id = sr.id AND q.status = 'pending') AS quote_count,
         (SELECT AVG(q.price) FROM service_request_quotes q WHERE q.service_request_id = sr.id AND q.status = 'pending') AS average_price
@@ -1340,7 +1345,10 @@ async function listServiceRequests(req) {
      WHERE sr.client_id = ? AND (sr.hidden_from_client IS NULL OR sr.hidden_from_client = 0)
      ORDER BY sr.created_at DESC`,
     [payload.sub]
-  );
+  )).map((r) => ({
+    ...r,
+    items: resolveOrderItems(r.category_name, r.order_details),
+  }));
   return { status: 200, data: { requests, total: requests.length } };
 }
 
