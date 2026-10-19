@@ -141,10 +141,10 @@ if (DATABASE_URL) {
         ["نقاش", "🎨"],
         ["تكييف", "❄️"],
         ["بناء وواجهات حجرية", "🧱"],
-        ["سيراميك", "🀄"],
+        ["سيراميك", "🧱"],
         ["باركيه", "🪵"],
         ["حداد", "🔨"],
-        ["محارة", "🏗️"],
+        ["محارة", "🪣"],
         ["رخام وجرانيت", "🪨"],
         ["جبسيوم بورد", "🧰"],
         ["جبس بلدي ومصيص", "🏛️"],
@@ -157,12 +157,18 @@ if (DATABASE_URL) {
         ["صيانة دش", "📡"],
         ["مكافحة حشرات وقوارض", "🐜"],
         ["حمامات سباحة", "🏊"],
-        ["صيانة اجهزة منزلية", "🧺"],
+        ["صيانة اجهزة منزلية", "🛠️"],
       ];
       for (const [name, icon] of seed) {
         await run("INSERT INTO categories (name_ar, icon) VALUES (?, ?)", [name, icon]);
       }
     }
+
+    // تحديث أيقونات مهن محددة (مرة واحدة بس — لو لسه بالشكل القديم).
+    // موجودة هنا عشان تتطبق على قاعدة الإنتاج (Supabase) تلقائيًا مع النشر.
+    await run("UPDATE categories SET icon = ? WHERE name_ar = ? AND icon = ?", ["🧱", "سيراميك", "🀄"]);
+    await run("UPDATE categories SET icon = ? WHERE name_ar = ? AND icon = ?", ["🪣", "محارة", "🏗️"]);
+    await run("UPDATE categories SET icon = ? WHERE name_ar = ? AND icon = ?", ["🛠️", "صيانة اجهزة منزلية", "🧺"]);
   }
 
   const ready = init().catch((err) => {
@@ -478,10 +484,10 @@ if (DATABASE_URL) {
       ["نقاش", "🎨"],
       ["تكييف", "❄️"],
       ["بناء وواجهات حجرية", "🧱"],
-      ["سيراميك", "🀄"],
+      ["سيراميك", "🧱"],
       ["باركيه", "🪵"],
       ["حداد", "🔨"],
-      ["محارة", "🏗️"],
+      ["محارة", "🪣"],
       ["رخام وجرانيت", "🪨"],
       ["جبسيوم بورد", "🧰"],
       ["جبس بلدي ومصيص", "🏛️"],
@@ -494,9 +500,14 @@ if (DATABASE_URL) {
       ["صيانة دش", "📡"],
       ["مكافحة حشرات وقوارض", "🐜"],
       ["حمامات سباحة", "🏊"],
-      ["صيانة اجهزة منزلية", "🧺"],
+      ["صيانة اجهزة منزلية", "🛠️"],
     ].forEach(([name, icon]) => insertCat.run(name, icon));
   }
+
+  // تحديث أيقونات مهن محددة لمرة واحدة (بس لو لسه بالشكل القديم).
+  sqlite.prepare("UPDATE categories SET icon = ? WHERE name_ar = ? AND icon = ?").run("🧱", "سيراميك", "🀄");
+  sqlite.prepare("UPDATE categories SET icon = ? WHERE name_ar = ? AND icon = ?").run("🪣", "محارة", "🏗️");
+  sqlite.prepare("UPDATE categories SET icon = ? WHERE name_ar = ? AND icon = ?").run("🛠️", "صيانة اجهزة منزلية", "🧺");
 
   async function run(sql, params = []) {
     return sqlite.prepare(sql).run(...params);
