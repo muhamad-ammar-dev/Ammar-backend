@@ -127,6 +127,9 @@ if (DATABASE_URL) {
 
     // ترحيلات أعمدة للجداول الموجودة (Postgres يضيف العمود لجدول جديد فقط)
     await run("ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TEXT");
+    // عنوان المستخدم اللي بيدخله وقت التسجيل (بيظهر للصنايعي في الإعدادات،
+    // ولصاحب المنصة في الدفعات والمستخدمين).
+    await run("ALTER TABLE users ADD COLUMN IF NOT EXISTS address TEXT");
     await run("ALTER TABLE orders ADD COLUMN IF NOT EXISTS hidden_from_client INTEGER NOT NULL DEFAULT 0");
     await run("ALTER TABLE orders ADD COLUMN IF NOT EXISTS hidden_from_provider INTEGER NOT NULL DEFAULT 0");
     await run("ALTER TABLE orders ADD COLUMN IF NOT EXISTS commission_charged_at TEXT");
@@ -196,6 +199,7 @@ if (DATABASE_URL) {
       email           TEXT,
       name            TEXT,
       avatar          TEXT,
+      address         TEXT,
       user_type       TEXT NOT NULL DEFAULT 'client', -- client | provider | both
       is_active       INTEGER NOT NULL DEFAULT 1,
       deleted_at      TEXT,
@@ -426,6 +430,8 @@ if (DATABASE_URL) {
   addColumn("users", "avatar", "TEXT");
   addColumn("users", "email", "TEXT");
   addColumn("users", "deleted_at", "TEXT");
+  // عنوان المستخدم اللي بيدخله وقت التسجيل.
+  addColumn("users", "address", "TEXT");
   // الحظر الإداري: علامة منفصلة عن is_active (الحساب ممكن يكون نشط
   // بس محظور من الأدمن)، وسبب الحظر بيظهر للمستخدم عند محاولة الدخول.
   addColumn("users", "is_banned", "INTEGER NOT NULL DEFAULT 0");

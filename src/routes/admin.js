@@ -45,7 +45,7 @@ async function listUsers(req, res, body, query) {
   if (!(await adminAuthorized(req))) return { status: 403, data: { error: "admin_unauthorized" } };
   const q = query && query.q ? String(query.q).toLowerCase() : null;
   let sql = `
-    SELECT u.id, u.name, u.phone_number, u.email, u.user_type, u.is_active, u.is_banned, u.ban_reason, u.banned_at, u.created_at,
+    SELECT u.id, u.name, u.phone_number, u.email, u.address, u.user_type, u.is_active, u.is_banned, u.ban_reason, u.banned_at, u.created_at,
            pp.id AS provider_id,
            (SELECT COALESCE(ROUND(w.unpaid_commission, 2), 0) FROM provider_wallets w WHERE w.provider_id = pp.id) AS unpaid_commission
     FROM users u
@@ -53,9 +53,9 @@ async function listUsers(req, res, body, query) {
   `;
   const params = [];
   if (q) {
-    sql += " WHERE lower(u.name) LIKE ? OR lower(u.phone_number) LIKE ? OR lower(u.email) LIKE ? OR u.id = ?";
+    sql += " WHERE lower(u.name) LIKE ? OR lower(u.phone_number) LIKE ? OR lower(u.email) LIKE ? OR lower(u.address) LIKE ? OR u.id = ?";
     const like = `%${q}%`;
-    params.push(like, like, like, q);
+    params.push(like, like, like, like, q);
   }
   sql += " ORDER BY u.created_at DESC LIMIT 200";
   const users = await db.all(sql, params);

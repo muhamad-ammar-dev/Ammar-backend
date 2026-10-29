@@ -81,15 +81,16 @@ async function requestOtp(req, res, body) {
 // بحث/إنشاء مستخدم برقم الموبايل — منطق مشترك بين OTP السيرفر و Firebase.
 // بيرجّع { user, isNewUser } بعد تطبيق قواعد "فترة السماح" (الاسترجاع/الحذف).
 // ---------------------------------------------------------------
-async function findOrCreateUserByPhone(phone, name) {
+async function findOrCreateUserByPhone(phone, name, address) {
+  const cleanAddress = address != null ? String(address).trim() : "";
   let user = await db.get("SELECT * FROM users WHERE phone_number = ?", [phone]);
   let isNewUser = false;
 
   if (!user) {
     const id = uuid();
     await db.run(
-      "INSERT INTO users (id, phone_number, name, user_type, is_active) VALUES (?, ?, ?, 'client', 1)",
-      [id, phone, name || null]
+      "INSERT INTO users (id, phone_number, name, address, user_type, is_active) VALUES (?, ?, ?, ?, 'client', 1)",
+      [id, phone, name || null, cleanAddress || null]
     );
     user = await db.get("SELECT * FROM users WHERE id = ?", [id]);
     isNewUser = true;
@@ -114,8 +115,8 @@ async function findOrCreateUserByPhone(phone, name) {
         await permanentlyDeleteUser(user.id);
         const id = uuid();
         await db.run(
-          "INSERT INTO users (id, phone_number, name, user_type, is_active) VALUES (?, ?, ?, 'client', 1)",
-          [id, phone, name || null]
+          "INSERT INTO users (id, phone_number, name, address, user_type, is_active) VALUES (?, ?, ?, ?, 'client', 1)",
+          [id, phone, name || null, cleanAddress || null]
         );
         user = await db.get("SELECT * FROM users WHERE id = ?", [id]);
         isNewUser = true;
@@ -126,6 +127,16 @@ async function findOrCreateUserByPhone(phone, name) {
       await db.run("UPDATE users SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [user.id]);
       user = await db.get("SELECT * FROM users WHERE id = ?", [user.id]);
     }
+  }
+
+  // لو المستخدم كتب عنوان جديد وقت الدخول، بنحدّثه (العنوان القديم بيفضل
+  // زي ما هو لو الخانة فاضية).
+  if (cleanAddress && user.address !== cleanAddress) {
+    await db.run(
+      "UPDATE users SET address = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [cleanAddress, user.id]
+    );
+    user.address = cleanAddress;
   }
 
   return { user, isNewUser };
@@ -159,7 +170,11 @@ async function verifyOtp(req, res, body) {
   await otpStore.del(`otp:${phone}`);
   await otpStore.resetAttempts(lockKey);
 
-  const { user, isNewUser } = await findOrCreateUserByPhone(phone, name);
+  const { user, isNewUser } = await findOrCreateUserByPhone(
+    phone,
+    name,
+    body.address != null ? String(body.address) : ""
+  );
   if (user.is_banned) return bannedResponse(user);
 
   const accessToken = jwt.sign({ sub: user.id, user_type: user.user_type }, 3600);
@@ -182,6 +197,7 @@ async function verifyOtp(req, res, body) {
         avatar: user.avatar,
         phone_number: user.phone_number,
         user_type: user.user_type,
+        address: user.address || null,
         is_new_user: isNewUser,
       },
     },
@@ -229,7 +245,11 @@ async function verifyFirebaseToken(req, res, body) {
   }
 
   const name = String(body.name || "").trim() || `مستخدم ${phone}`;
-  const { user, isNewUser } = await findOrCreateUserByPhone(phone, name);
+  const { user, isNewUser } = await findOrCreateUserByPhone(
+    phone,
+    name,
+    body.address != null ? String(body.address) : ""
+  );
   if (user.is_banned) return bannedResponse(user);
 
   const accessToken = jwt.sign({ sub: user.id, user_type: user.user_type }, 3600);
@@ -252,6 +272,7 @@ async function verifyFirebaseToken(req, res, body) {
         avatar: user.avatar,
         phone_number: user.phone_number,
         user_type: user.user_type,
+        address: user.address || null,
         is_new_user: isNewUser,
       },
     },
@@ -332,6 +353,10 @@ async function verifyEmailOtp(req, res, body) {
     phone = normalizePhone(String(body.phone_number));
   }
 
+  // عنوان المستخدم (اختياري على مستوى السيرفر عشان مسارات/اختبارات قديمة
+  // تفضل شغالة، لكن التطبيق بيطلبه إجباري في شاشة الدخول).
+  const address = body.address != null ? String(body.address).trim() : "";
+
   const lockKey = `email_otp_lock:${email}`;
   if (await otpStore.getAttempts(lockKey) >= OTP_MAX_VERIFY_ATTEMPTS) {
     return { status: 429, data: { error: "too_many_failed_attempts", retry_after: OTP_VERIFY_LOCK_SECONDS } };
@@ -368,8 +393,8 @@ async function verifyEmailOtp(req, res, body) {
     } else {
       const id = uuid();
       await db.run(
-        "INSERT INTO users (id, phone_number, email, name, user_type, is_active) VALUES (?, ?, ?, ?, 'client', 1)",
-        [id, phone, email, name || null]
+        "INSERT INTO users (id, phone_number, email, name, address, user_type, is_active) VALUES (?, ?, ?, ?, ?, 'client', 1)",
+        [id, phone, email, name || null, address || null]
       );
       user = await db.get("SELECT * FROM users WHERE id = ?", [id]);
       isNewUser = true;
@@ -422,8 +447,8 @@ async function verifyEmailOtp(req, res, body) {
         await permanentlyDeleteUser(user.id);
         const id = uuid();
         await db.run(
-          "INSERT INTO users (id, phone_number, email, name, user_type, is_active) VALUES (?, ?, ?, ?, 'client', 1)",
-          [id, phone, email, name || null]
+          "INSERT INTO users (id, phone_number, email, name, address, user_type, is_active) VALUES (?, ?, ?, ?, ?, 'client', 1)",
+          [id, phone, email, name || null, address || null]
         );
         user = await db.get("SELECT * FROM users WHERE id = ?", [id]);
         isNewUser = true;
@@ -432,6 +457,15 @@ async function verifyEmailOtp(req, res, body) {
       await db.run("UPDATE users SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [user.id]);
       user = await db.get("SELECT * FROM users WHERE id = ?", [user.id]);
     }
+  }
+
+  // عنوان جديد اتكتب وقت الدخول — بنحدّثه (ولو فاضي بنسيب القديم زي ما هو).
+  if (address && user.address !== address) {
+    await db.run(
+      "UPDATE users SET address = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [address, user.id]
+    );
+    user.address = address;
   }
 
   if (user.is_banned) return bannedResponse(user);
@@ -457,6 +491,7 @@ async function verifyEmailOtp(req, res, body) {
         email: user.email,
         phone_number: user.phone_number,
         user_type: user.user_type,
+        address: user.address || null,
         is_new_user: isNewUser,
       },
     },
@@ -541,8 +576,9 @@ async function updateProfile(req, res, body) {
   const hasName = name !== undefined && name !== null;
   const hasAvatar = body.avatar !== undefined;
   const hasPhone = body.phone_number !== undefined && body.phone_number !== null;
+  const hasAddress = body.address !== undefined && body.address !== null;
 
-  if (!hasName && !hasAvatar && !hasPhone) {
+  if (!hasName && !hasAvatar && !hasPhone && !hasAddress) {
     return { status: 400, data: { error: "nothing_to_update" } };
   }
   if (hasName && !String(name).trim()) {
@@ -599,10 +635,17 @@ async function updateProfile(req, res, body) {
     updates.push("phone_number = ?");
     params.push(normalizedPhone);
   }
+  if (hasAddress) {
+    updates.push("address = ?");
+    params.push(String(body.address).trim() || null);
+  }
   updates.push("updated_at = CURRENT_TIMESTAMP");
   await db.run(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`, [...params, payload.sub]);
 
-  const user = await db.get("SELECT id, name, phone_number, user_type, avatar FROM users WHERE id = ?", [payload.sub]);
+  const user = await db.get(
+    "SELECT id, name, phone_number, user_type, avatar, email, address FROM users WHERE id = ?",
+    [payload.sub]
+  );
   return { status: 200, data: { user } };
 }
 

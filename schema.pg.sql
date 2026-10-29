@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
   email        TEXT,
   name         TEXT,
   avatar       TEXT,
+  address      TEXT,
   user_type    TEXT NOT NULL DEFAULT 'client', -- client | provider | both
   is_active    INTEGER NOT NULL DEFAULT 1,
   is_banned    INTEGER NOT NULL DEFAULT 0,
@@ -33,6 +34,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TEXT;
+-- عنوان المستخدم (بيتسجل وقت التسجيل)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS address TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email) WHERE email IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS provider_profiles (

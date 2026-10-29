@@ -95,7 +95,7 @@ async function adminCommissions(req) {
 
   const db = require("../db");
   const providers = await db.all(
-    `SELECT pp.id AS provider_id, u.name, u.phone_number,
+    `SELECT pp.id AS provider_id, u.name, u.phone_number, u.address,
         w.unpaid_commission, w.total_commission, w.total_earned,
         CASE WHEN w.unpaid_commission > 0 THEN 1 ELSE 0 END AS blocked
       FROM provider_profiles pp
@@ -123,7 +123,12 @@ async function adminCommissions(req) {
   const pendingPayments = await db.all(
     "SELECT * FROM commission_payments WHERE status = 'pending_confirmation' ORDER BY created_at DESC"
   );
-  return { status: 200, data: { providers, pending_payments: pendingPayments } };
+  // عدد العملاء في التطبيق (حسابات لسه شغالة) — بيظهر تحت عدد الصنايعية.
+  const clientsRow = await db.get(
+    "SELECT COUNT(*) AS c FROM users WHERE user_type = 'client' AND is_active = 1"
+  );
+  const clientsCount = Number(clientsRow && clientsRow.c) || 0;
+  return { status: 200, data: { providers, pending_payments: pendingPayments, clients_count: clientsCount } };
 }
 
 async function requireProvider(userId) {
