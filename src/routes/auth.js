@@ -682,7 +682,7 @@ async function permanentlyDeleteUser(userId) {
   await db.run("DELETE FROM refresh_tokens WHERE user_id = ?", [userId]);
   await db.run("DELETE FROM device_tokens WHERE user_id = ?", [userId]);
   await db.run(
-    "UPDATE users SET is_active = 0, deleted_at = deleted_at, phone_number = phone_number || '_deleted_' || id, email = NULL, avatar = NULL, name = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    "UPDATE users SET is_active = 0, deleted_at = deleted_at, phone_number = phone_number || '_deleted_' || id, email = NULL, avatar = NULL, name = NULL, address = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
     [userId]
   );
 }
