@@ -1651,7 +1651,7 @@ async function confirmServiceRequestQuote(req, res, body, requestId) {
   // إشعار للصنايعي اللي اترشّح — العميل اختاره، ولسه محتاج يقبل الطلب
   fcm.sendToUser(quote.provider_user_id, {
     title: "🎉 تم اختيارك",
-    body: `العميل اختار عرضك — افتح "شغلانة حالية" واقبل الطلب عشان تبدأ`,
+    body: `العميل اختار عرضك — افتح "قسم الطلبات في شغلي كصنايعي" واقبل الطلب عشان تبدأ`,
     data: { type: "order_assigned", order_id: orderId },
   });
   const accepted = await db.get("SELECT * FROM service_requests WHERE id = ?", [requestId]);
