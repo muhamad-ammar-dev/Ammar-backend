@@ -493,9 +493,11 @@ async function acceptOrder(req, res, body, orderId) {
   const order = await db.get("SELECT * FROM orders WHERE id = ?", [orderId]);
   if (!order) return { status: 404, data: { error: "order_not_found" } };
 
-  // منع قبول طلبات جديدة لو عليه عمولة مستحقة وصلت للحد
+  // منع قبول طلبات جديدة لو عليه عمولة مستحقة وصلت للحد.
+  // استثناء: طلب هو بالفعل فتحه واتحسبت عمولته (commission_charged_at) —
+  // ده مينفعش يتحبس فيه وهو في نص الطريق، والقبول هنا بيسجّل الإيراد بس.
   const block = await walletService.getBlockStatus(provider.id);
-  if (block.blocked) {
+  if (block.blocked && order.commission_charged_at == null) {
     return {
       status: 403,
       data: { error: "commission_unpaid", unpaid_commission: block.unpaid_commission, threshold: block.threshold },
@@ -554,7 +556,17 @@ async function acceptOrder(req, res, body, orderId) {
   hub.publish(`order:${orderId}:tracking`, { type: "status", status: "accepted", price });
 
   const updated = await db.get("SELECT * FROM orders WHERE id = ?", [orderId]);
-  return { status: 200, data: updated };
+  // معلومات العمولة بترجع للتطبيق عشان يعرّف الصنايعي إن العمولة
+  // اتسجلت عليه في المحفظة لحظة ما دخل شاشة "شغلانة حالية".
+  return {
+    status: 200,
+    data: {
+      ...updated,
+      commission_charged: updated.commission_charged_at != null,
+      commission_charged_amount: Number(updated.commission_amount) || 0,
+      commission_charged_percent: Number(updated.commission_percent) || 0,
+    },
+  };
 }
 
 // ---------------------------------------------------------------
@@ -1591,12 +1603,16 @@ async function confirmServiceRequestQuote(req, res, body, requestId) {
     };
   }
 
+  // الطلب بيتعمل pending مش accepted: العميل لسه اختار الصنايعي بس،
+  // والحالة الحقيقية "في انتظار قبول الصنايعي" لحد ما الصنايعي يفتح
+  // شاشة "شغلانة حالية" (ساعتها يتنادى acceptOrder، بتتحسب العمولة
+  // مرة واحدة، والحالة تتحول accepted).
   const orderId = uuid();
   await db.run(
     `INSERT INTO orders
      (id, client_id, provider_id, category_id, status, price, price_estimated,
       hours, hourly_rate, address_text, lat, lng, notes, order_details)
-     VALUES (?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       orderId,
       payload.sub,
@@ -1623,19 +1639,19 @@ async function confirmServiceRequestQuote(req, res, body, requestId) {
     `UPDATE service_request_quotes SET status = 'accepted', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     [quote.id]
   );
-  await db.run("INSERT INTO order_status_log (order_id, status, changed_by) VALUES (?, 'accepted', ?)", [orderId, payload.sub]);
+  await db.run("INSERT INTO order_status_log (order_id, status, changed_by) VALUES (?, 'pending', ?)", [orderId, payload.sub]);
   hub.publish(`service-request:${requestId}:quotes`, { type: "quote_accepted", quote_id: quote.id, price });
-  hub.publish(`order:${orderId}:tracking`, { type: "status", status: "accepted", price });
+  hub.publish(`order:${orderId}:tracking`, { type: "status", status: "pending", price });
   // الإعلان لبقية الصنايعية إن الطلب اترتبط بصنايعي (يتشال من قايمة المتاح)
   hub.publish(`orders:available:cat:${request.category_id}`, {
     type: "request_taken",
     service_request_id: requestId,
     provider_profile_id: quote.provider_id,
   });
-  // إشعار للصنايعي اللي اترشّح — يبدأ الشغل
+  // إشعار للصنايعي اللي اترشّح — العميل اختاره، ولسه محتاج يقبل الطلب
   fcm.sendToUser(quote.provider_user_id, {
     title: "🎉 تم اختيارك",
-    body: `العميل اختار عرضك — الشغلانة بقت مضمونة لك. اتواصل معاه وابدأ`,
+    body: `العميل اختار عرضك — افتح "شغلانة حالية" واقبل الطلب عشان تبدأ`,
     data: { type: "order_assigned", order_id: orderId },
   });
   const accepted = await db.get("SELECT * FROM service_requests WHERE id = ?", [requestId]);
