@@ -1274,18 +1274,55 @@ async function clearCompletedOrders(req) {
 // GET/POST /service-requests — طلبات العملاء التي تنتظر أسعارًا من
 // الصنايعية. الطلب مفتوح، وكل صنايعي يضيف عرضه دون تحديد الطلب مسبقًا.
 // ---------------------------------------------------------------
+// صور المشكلة الخاصة بطلب عروض الأسعار (حد أقصى 3) — بنخزّنها في
+// service_request_images، وبنرفعها على التخزين لو متظبط وإلا بنحتفظ
+// بالـ data URL نفسه (تطوير محلي) زي ما بنعمل في الطلبات العادية.
+async function saveServiceRequestImages(requestId, images) {
+  if (!Array.isArray(images) || !images.length) return;
+  const storage = require("../utils/storage");
+  for (const img of images) {
+    if (typeof img !== "string" || !img) continue;
+    const uploaded = await storage.uploadDataUrl(img, "service-requests");
+    const value = uploaded || (img.length < 3_000_000 ? img : null);
+    if (value) {
+      await db.run(
+        "INSERT INTO service_request_images (id, service_request_id, image_base64) VALUES (?, ?, ?)",
+        [uuid(), requestId, value]
+      );
+    }
+  }
+}
+
+async function loadServiceRequestImages(requestId) {
+  const rows = await db.all(
+    "SELECT image_base64 FROM service_request_images WHERE service_request_id = ? ORDER BY created_at ASC",
+    [requestId]
+  );
+  return rows.map((r) => r.image_base64);
+}
+
+// بيضيف حقل images لكل طلب في القايمة (للعميل وللصنايعية).
+async function withServiceRequestImages(requests) {
+  return Promise.all(
+    requests.map(async (r) => ({ ...r, images: await loadServiceRequestImages(r.id) }))
+  );
+}
+
 async function createServiceRequest(req, res, body) {
   const payload = await requireAuth(req);
   if (payload.user_type !== "client" && payload.user_type !== "both") {
     return { status: 403, data: { error: "client_account_required" } };
   }
 
-  const { category_id, address_text, lat, lng, description, order_details } = body;
+  const { category_id, address_text, lat, lng, description, order_details, images } = body;
   if (!category_id || !address_text || lat == null || lng == null || !String(description || "").trim()) {
     return { status: 400, data: { error: "category_address_lat_lng_description_required" } };
   }
   if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
     return { status: 400, data: { error: "invalid_location" } };
+  }
+  if (images != null && (!Array.isArray(images) || images.length > 3)) {
+    return { status: 400, data: { error: "images_must_be_array_of_max_3" } };
   }
 
   const category = await db.get("SELECT id, name_ar FROM categories WHERE id = ?", [category_id]);
@@ -1319,6 +1356,8 @@ async function createServiceRequest(req, res, body) {
     ]
   );
   const request = await db.get("SELECT * FROM service_requests WHERE id = ?", [id]);
+  await saveServiceRequestImages(id, images);
+  request.images = await loadServiceRequestImages(id);
   const client = await db.get("SELECT name FROM users WHERE id = ?", [payload.sub]);
 
   // بث الطلب لحظيًا لكل الصنايعية المتاحين في نفس المهنة (من الـ WebSocket)
@@ -1335,6 +1374,8 @@ async function createServiceRequest(req, res, body) {
       lng: request.lng,
       price: request.price,
       order_details: safeParseJson(request.order_details),
+      images: request.images,
+      image_count: request.images.length,
       created_at: request.created_at,
     },
   };
@@ -1372,7 +1413,7 @@ async function createServiceRequest(req, res, body) {
 
 async function listServiceRequests(req) {
   const payload = await requireAuth(req);
-  const requests = (await db.all(
+  const requests = (await withServiceRequestImages(await db.all(
     `SELECT sr.*, c.name_ar AS category_name,
         (SELECT COUNT(*) FROM service_request_quotes q WHERE q.service_request_id = sr.id AND q.status = 'pending') AS quote_count,
         (SELECT AVG(q.price) FROM service_request_quotes q WHERE q.service_request_id = sr.id AND q.status = 'pending') AS average_price
@@ -1381,7 +1422,7 @@ async function listServiceRequests(req) {
      WHERE sr.client_id = ? AND (sr.hidden_from_client IS NULL OR sr.hidden_from_client = 0)
      ORDER BY sr.created_at DESC`,
     [payload.sub]
-  )).map((r) => ({
+  ))).map((r) => ({
     ...r,
     items: resolveOrderItems(r.category_name, r.order_details),
   }));
@@ -1432,6 +1473,7 @@ async function availableServiceRequests(req) {
       .filter((r) => r.distance_km != null && r.distance_km <= SERVICE_RADIUS_KM)
       .sort((a, b) => a.distance_km - b.distance_km);
   }
+  requests = await withServiceRequestImages(requests);
   return { status: 200, data: { requests, total: requests.length } };
 }
 
@@ -1451,6 +1493,7 @@ async function getServiceRequestQuotes(req, query, requestId) {
     ...request,
     category_name: requestCategory ? requestCategory.name_ar : null,
     items: resolveOrderItems(requestCategory ? requestCategory.name_ar : null, request.order_details),
+    images: await loadServiceRequestImages(requestId),
   };
 
   const rawQuotes = await db.all(
@@ -1640,6 +1683,13 @@ async function confirmServiceRequestQuote(req, res, body, requestId) {
     [quote.id]
   );
   await db.run("INSERT INTO order_status_log (order_id, status, changed_by) VALUES (?, 'pending', ?)", [orderId, payload.sub]);
+  // صور المشكلة اللي العميل رفقها بتنتقل للطلب نفسه عشان تفضل معاه.
+  for (const img of await loadServiceRequestImages(requestId)) {
+    await db.run(
+      "INSERT INTO order_images (id, order_id, image_base64) VALUES (?, ?, ?)",
+      [uuid(), orderId, img]
+    );
+  }
   hub.publish(`service-request:${requestId}:quotes`, { type: "quote_accepted", quote_id: quote.id, price });
   hub.publish(`order:${orderId}:tracking`, { type: "status", status: "pending", price });
   // الإعلان لبقية الصنايعية إن الطلب اترتبط بصنايعي (يتشال من قايمة المتاح)

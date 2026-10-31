@@ -292,6 +292,13 @@ if (DATABASE_URL) {
       UNIQUE(service_request_id, provider_id)
     );
 
+    CREATE TABLE IF NOT EXISTS service_request_images (
+      id                 TEXT PRIMARY KEY,
+      service_request_id TEXT NOT NULL REFERENCES service_requests(id) ON DELETE CASCADE,
+      image_base64       TEXT NOT NULL,
+      created_at         TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+    );
+
     CREATE TABLE IF NOT EXISTS order_status_log (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       order_id    TEXT NOT NULL REFERENCES orders(id),

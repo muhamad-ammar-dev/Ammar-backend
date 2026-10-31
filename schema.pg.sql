@@ -126,6 +126,15 @@ CREATE TABLE IF NOT EXISTS service_request_quotes (
   UNIQUE(service_request_id, provider_id)
 );
 
+-- صور المشكلة اللي العميل بيرفقها مع طلب عروض الأسعار (حد أقصى 3).
+-- بتتنسخ لـ order_images لما العميل يختار عرض صنايعي، عشان تفضل مع الطلب.
+CREATE TABLE IF NOT EXISTS service_request_images (
+  id                 TEXT PRIMARY KEY,
+  service_request_id TEXT NOT NULL REFERENCES service_requests(id) ON DELETE CASCADE,
+  image_base64       TEXT NOT NULL,
+  created_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS order_status_log (
   id         BIGSERIAL PRIMARY KEY,
   order_id   TEXT NOT NULL REFERENCES orders(id),
@@ -260,6 +269,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_category ON orders (category_id);
 CREATE INDEX IF NOT EXISTS idx_service_requests_client ON service_requests (client_id, status);
 CREATE INDEX IF NOT EXISTS idx_service_request_quotes_request ON service_request_quotes (service_request_id, status);
 CREATE INDEX IF NOT EXISTS idx_service_request_quotes_provider ON service_request_quotes (provider_id);
+CREATE INDEX IF NOT EXISTS idx_service_request_images_request ON service_request_images (service_request_id);
 
 CREATE INDEX IF NOT EXISTS idx_status_log_order ON order_status_log (order_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens (user_id);
