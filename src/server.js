@@ -227,11 +227,17 @@ const server = http.createServer(async (req, res) => {
 // في وضع PostgreSQL لازم نتأكد إن الاتصال تم والـ schema جاهزة قبل ما
 // نستقبل أي طلب — لو الـ DB مش متاحة نفضّل نفشل فورًا (fail fast).
 db.ready
-  .then(() => {
+  .then(async () => {
     if (db.mode === "postgres") {
       console.log(`   قاعدة البيانات: PostgreSQL (${db.mode})`);
     } else {
       console.log(`   قاعدة البيانات: SQLite (وضع التطوير) — حطّ DATABASE_URL للإنتاج`);
+    }
+    // حساب مراجعة Google Play (اختياري — بيشتغل بس لو REVIEW_PHONE/REVIEW_OTP متظبطين)
+    try {
+      await auth.ensureReviewAccount();
+    } catch (err) {
+      console.error("[review] تعذّر تجهيز حساب المراجعة:", err.message || err);
     }
     server.listen(PORT, () => {
       console.log(`🚀 utlob-sanaii-api شغال على http://localhost:${PORT}`);

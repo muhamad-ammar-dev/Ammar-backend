@@ -34,6 +34,24 @@ function devOtpCode() {
   return process.env.DEV_OTP || null;
 }
 
+// حساب مراجعة Google Play: بيشتغل بس لو المحغيرين REVIEW_PHONE و
+// REVIEW_OTP متظبطين على السيرفر، وبيأثر على رقم واحد بس (رقم
+// المراجعة). أي رقم تاني بيفضل ياخد SMS عادي — يعني مفيش "باب خلفي"
+// مفتوح لكل الأرقام، ولو المتغيرين اتشالوا من الإعدادات الميزة بتتقفل
+// فورًا من غير أي تغيير في الكود.
+function reviewPhone() {
+  const raw = process.env.REVIEW_PHONE;
+  if (!raw || !isValidEgyptianPhone(String(raw).trim())) return null;
+  return normalizePhone(String(raw).trim());
+}
+
+function reviewOtpCode(phone) {
+  const code = process.env.REVIEW_OTP;
+  const phoneToReview = reviewPhone();
+  if (!code || !phoneToReview || phone !== phoneToReview) return null;
+  return String(code).trim();
+}
+
 // الحظر الإداري: الحساب المحظور مينفعش يسجّل دخول خالص، وبنرجّع سبب
 // الحظر مع الرد عشان التطبيق يعرضه للمستخدم.
 function bannedResponse(user) {
@@ -62,16 +80,21 @@ async function requestOtp(req, res, body) {
 
   // في التطوير: بنستخدم DEV_OTP ثابت لو متظبط (أسهل للاختبار المحلي)،
   // وإلا بنولّد كود عشوائي. في الإنتاج بيتبعت SMS حقيقي.
-  const code = devOtpCode() || generateOtp();
+  // استثناء واحد: رقم حساب مراجعة Google Play (لو متظبط في الإعدادات)
+  // بياخد كود ثابت من غير إرسال SMS.
+  const reviewCode = reviewOtpCode(phone);
+  const code = reviewCode || devOtpCode() || generateOtp();
   await otpStore.set(`otp:${phone}`, code, OTP_TTL_SECONDS);
 
   // في الإنتاج: هنا بيتم استدعاء SMS gateway حقيقي (Vonage / SMS Misr...).
   // في التطوير: بنطبع الكود في الـ console عشان تقدر تكمل الفلو محليًا.
-  try {
-    await sendOtp(phone, code);
-  } catch (err) {
-    // SMS provider failed - keep the OTP valid and log the error.
-    console.error("[OTP] SMS send failed:", err && err.message ? err.message : err);
+  if (!reviewCode) {
+    try {
+      await sendOtp(phone, code);
+    } catch (err) {
+      // SMS provider failed - keep the OTP valid and log the error.
+      console.error("[OTP] SMS send failed:", err && err.message ? err.message : err);
+    }
   }
 
   return { status: 200, data: { message: "OTP sent", expires_in: OTP_TTL_SECONDS } };
@@ -140,6 +163,37 @@ async function findOrCreateUserByPhone(phone, name, address) {
   }
 
   return { user, isNewUser };
+}
+
+// ---------------------------------------------------------------
+// تجهيز حساب مراجعة Google Play (بيتنادى مرة واحدة عند تشغيل السيرفر).
+// بيشتغل بس لو REVIEW_PHONE و REVIEW_OTP متظبطين — وبينشئ الحساب لو
+// مش موجود (أو يرجّعه لو كان متقفل) عشان المراجع يلاقي حساب جاهز.
+// ---------------------------------------------------------------
+async function ensureReviewAccount() {
+  const phone = reviewPhone();
+  if (!phone || !process.env.REVIEW_OTP) return null;
+
+  let user = await db.get("SELECT * FROM users WHERE phone_number = ?", [phone]);
+  if (!user) {
+    const id = uuid();
+    const name = String(process.env.REVIEW_NAME || "Google Play Review").trim();
+    const address = String(process.env.REVIEW_ADDRESS || "القاهرة، مصر").trim();
+    await db.run(
+      "INSERT INTO users (id, phone_number, name, address, user_type, is_active) VALUES (?, ?, ?, ?, 'client', 1)",
+      [id, phone, name, address]
+    );
+    user = await db.get("SELECT * FROM users WHERE id = ?", [id]);
+    console.log(`[review] تم إنشاء حساب مراجعة Google Play (${phone})`);
+  } else if (!user.is_active) {
+    await db.run(
+      "UPDATE users SET is_active = 1, deleted_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [user.id]
+    );
+    user = await db.get("SELECT * FROM users WHERE id = ?", [user.id]);
+    console.log(`[review] تم إعادة تفعيل حساب مراجعة Google Play (${phone})`);
+  }
+  return user;
 }
 
 // ---------------------------------------------------------------
@@ -706,4 +760,4 @@ async function purgeExpiredDeletions(now = Date.now()) {
   return purged;
 }
 
-module.exports = { requestOtp, verifyOtp, verifyFirebaseToken, requestEmailOtp, verifyEmailOtp, refresh, logout, switchMode, updateProfile, deleteAccount, purgeExpiredDeletions };
+module.exports = { requestOtp, verifyOtp, verifyFirebaseToken, requestEmailOtp, verifyEmailOtp, refresh, logout, switchMode, updateProfile, deleteAccount, purgeExpiredDeletions, ensureReviewAccount };
