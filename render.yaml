@@ -81,3 +81,17 @@ services:
       # والمفتاح مش بينزل على GitHub أبدًا (الملف مستثنى في .gitignore).
       - key: FIREBASE_SERVICE_ACCOUNT_B64
         sync: false
+
+      # --- حساب مراجعة Google Play (اختياري) ---
+      # إيميل مراجعة واحد بياخد كود OTP ثابت من غير ما يتبعت له إيميل،
+      # عشان فريق مراجعة Google Play يقدر يدخل التطبيق. سيب القيم فاضية
+      # لو مش محتاجها — الميزة بتشتغل بس لما REVIEW_EMAIL و REVIEW_OTP
+      # يكونوا متظبطين. (القيم بتتكتب من لوحة Render مش من هنا.)
+      - key: REVIEW_EMAIL
+        sync: false
+      - key: REVIEW_OTP
+        sync: false
+      - key: REVIEW_NAME
+        sync: false
+      - key: REVIEW_ADDRESS
+        sync: false
