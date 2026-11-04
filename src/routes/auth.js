@@ -34,26 +34,11 @@ function devOtpCode() {
   return process.env.DEV_OTP || null;
 }
 
-// حساب مراجعة Google Play: بيشتغل بس لو المحغيرين REVIEW_PHONE و
-// REVIEW_OTP متظبطين على السيرفر، وبيأثر على رقم واحد بس (رقم
-// المراجعة). أي رقم تاني بيفضل ياخد SMS عادي — يعني مفيش "باب خلفي"
-// مفتوح لكل الأرقام، ولو المتغيرين اتشالوا من الإعدادات الميزة بتتقفل
-// فورًا من غير أي تغيير في الكود.
-function reviewPhone() {
-  const raw = process.env.REVIEW_PHONE;
-  if (!raw || !isValidEgyptianPhone(String(raw).trim())) return null;
-  return normalizePhone(String(raw).trim());
-}
-
-function reviewOtpCode(phone) {
-  const code = process.env.REVIEW_OTP;
-  const phoneToReview = reviewPhone();
-  if (!code || !phoneToReview || phone !== phoneToReview) return null;
-  return String(code).trim();
-}
-
-// نفس الفكرة لتسجيل الدخول بالإيميل: التطبيق حاليًا بيبعت الكود على
-// الإيميل، فبنسمح بإيميل مراجعة واحد بكود ثابت من غير ما يتبعت إيميل.
+// حساب مراجعة Google Play: التطبيق بيسجّل الدخول بالإيميل بس، فبنسمح
+// بإيميل مراجعة واحد بكود ثابت من غير ما يتبعت له إيميل. الميزة دي
+// بتشتغل بس لو REVIEW_EMAIL و REVIEW_OTP متظبطين على السيرفر — أي
+// إيميل تاني بيفضل ياخد كود عادي على بريده، ولو المتغيرين اتشالوا
+// الميزة بتتقفل فورًا من غير أي تغيير في الكود.
 function reviewEmail() {
   const raw = process.env.REVIEW_EMAIL;
   if (!raw) return null;
@@ -66,6 +51,17 @@ function reviewEmailOtpCode(email) {
   const emailToReview = reviewEmail();
   if (!code || !emailToReview || email !== emailToReview) return null;
   return String(code).trim();
+}
+
+// رقم الموبايل المرتبط بحساب المراجعة (بيانات حساب بس — مش مسار دخول).
+// التطبيق بيطلب رقم موبايل إجباري وقت التسجيل، فبنستخدم رقم ثابت شكله
+// صحيح لو REVIEW_PHONE مش متظبط.
+function reviewAccountPhone() {
+  const raw = process.env.REVIEW_PHONE;
+  if (raw && isValidEgyptianPhone(String(raw).trim())) {
+    return normalizePhone(String(raw).trim());
+  }
+  return "+201000000001";
 }
 
 // الحظر الإداري: الحساب المحظور مينفعش يسجّل دخول خالص، وبنرجّع سبب
@@ -96,21 +92,16 @@ async function requestOtp(req, res, body) {
 
   // في التطوير: بنستخدم DEV_OTP ثابت لو متظبط (أسهل للاختبار المحلي)،
   // وإلا بنولّد كود عشوائي. في الإنتاج بيتبعت SMS حقيقي.
-  // استثناء واحد: رقم حساب مراجعة Google Play (لو متظبط في الإعدادات)
-  // بياخد كود ثابت من غير إرسال SMS.
-  const reviewCode = reviewOtpCode(phone);
-  const code = reviewCode || devOtpCode() || generateOtp();
+  const code = devOtpCode() || generateOtp();
   await otpStore.set(`otp:${phone}`, code, OTP_TTL_SECONDS);
 
   // في الإنتاج: هنا بيتم استدعاء SMS gateway حقيقي (Vonage / SMS Misr...).
   // في التطوير: بنطبع الكود في الـ console عشان تقدر تكمل الفلو محليًا.
-  if (!reviewCode) {
-    try {
-      await sendOtp(phone, code);
-    } catch (err) {
-      // SMS provider failed - keep the OTP valid and log the error.
-      console.error("[OTP] SMS send failed:", err && err.message ? err.message : err);
-    }
+  try {
+    await sendOtp(phone, code);
+  } catch (err) {
+    // SMS provider failed - keep the OTP valid and log the error.
+    console.error("[OTP] SMS send failed:", err && err.message ? err.message : err);
   }
 
   return { status: 200, data: { message: "OTP sent", expires_in: OTP_TTL_SECONDS } };
@@ -187,13 +178,12 @@ async function findOrCreateUserByPhone(phone, name, address) {
 // مش موجود (أو يرجّعه لو كان متقفل) عشان المراجع يلاقي حساب جاهز.
 // ---------------------------------------------------------------
 async function ensureReviewAccount() {
-  const phone = reviewPhone();
   const email = reviewEmail();
-  if (!process.env.REVIEW_OTP || (!phone && !email)) return null;
+  if (!email || !process.env.REVIEW_OTP) return null;
+  const phone = reviewAccountPhone();
 
-  let user = null;
-  if (email) user = await db.get("SELECT * FROM users WHERE email = ?", [email]);
-  if (!user && phone) user = await db.get("SELECT * FROM users WHERE phone_number = ?", [phone]);
+  let user = await db.get("SELECT * FROM users WHERE email = ?", [email]);
+  if (!user) user = await db.get("SELECT * FROM users WHERE phone_number = ?", [phone]);
 
   if (!user) {
     const id = uuid();
@@ -204,33 +194,20 @@ async function ensureReviewAccount() {
       [id, phone, email, name, address]
     );
     user = await db.get("SELECT * FROM users WHERE id = ?", [id]);
-    console.log(`[review] تم إنشاء حساب مراجعة Google Play (${email || phone})`);
+    console.log(`[review] تم إنشاء حساب مراجعة Google Play (${email})`);
   } else if (!user.is_active) {
     await db.run(
       "UPDATE users SET is_active = 1, deleted_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
       [user.id]
     );
     user = await db.get("SELECT * FROM users WHERE id = ?", [user.id]);
-    console.log(`[review] تم إعادة تفعيل حساب مراجعة Google Play (${email || phone})`);
-  } else {
-    // الحساب موجود بالفعل (مثلًا اتعمل قبل ما نضيف REVIEW_EMAIL) — بنكمّل
-    // البيانات الناقصة بس، من غير ما نلمس أي بيانات موجودة.
-    const updates = [];
-    const params = [];
-    if (email && !user.email) {
-      updates.push("email = ?");
-      params.push(email);
-    }
-    if (phone && !user.phone_number) {
-      updates.push("phone_number = ?");
-      params.push(phone);
-    }
-    if (updates.length) {
-      updates.push("updated_at = CURRENT_TIMESTAMP");
-      await db.run(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`, [...params, user.id]);
-      user = await db.get("SELECT * FROM users WHERE id = ?", [user.id]);
-      console.log(`[review] تم تحديث بيانات حساب مراجعة Google Play (${email || phone})`);
-    }
+    console.log(`[review] تم إعادة تفعيل حساب مراجعة Google Play (${email})`);
+  } else if (!user.email) {
+    // الحساب اتعمل قبل ما نظبط REVIEW_EMAIL — بنضيف الإيميل بس من غير
+    // ما نلمس أي بيانات موجودة.
+    await db.run("UPDATE users SET email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [email, user.id]);
+    user = await db.get("SELECT * FROM users WHERE id = ?", [user.id]);
+    console.log(`[review] تم ربط إيميل حساب مراجعة Google Play (${email})`);
   }
   return user;
 }
