@@ -52,6 +52,22 @@ function reviewOtpCode(phone) {
   return String(code).trim();
 }
 
+// نفس الفكرة لتسجيل الدخول بالإيميل: التطبيق حاليًا بيبعت الكود على
+// الإيميل، فبنسمح بإيميل مراجعة واحد بكود ثابت من غير ما يتبعت إيميل.
+function reviewEmail() {
+  const raw = process.env.REVIEW_EMAIL;
+  if (!raw) return null;
+  const email = String(raw).trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
+}
+
+function reviewEmailOtpCode(email) {
+  const code = process.env.REVIEW_OTP;
+  const emailToReview = reviewEmail();
+  if (!code || !emailToReview || email !== emailToReview) return null;
+  return String(code).trim();
+}
+
 // الحظر الإداري: الحساب المحظور مينفعش يسجّل دخول خالص، وبنرجّع سبب
 // الحظر مع الرد عشان التطبيق يعرضه للمستخدم.
 function bannedResponse(user) {
@@ -172,26 +188,49 @@ async function findOrCreateUserByPhone(phone, name, address) {
 // ---------------------------------------------------------------
 async function ensureReviewAccount() {
   const phone = reviewPhone();
-  if (!phone || !process.env.REVIEW_OTP) return null;
+  const email = reviewEmail();
+  if (!process.env.REVIEW_OTP || (!phone && !email)) return null;
 
-  let user = await db.get("SELECT * FROM users WHERE phone_number = ?", [phone]);
+  let user = null;
+  if (email) user = await db.get("SELECT * FROM users WHERE email = ?", [email]);
+  if (!user && phone) user = await db.get("SELECT * FROM users WHERE phone_number = ?", [phone]);
+
   if (!user) {
     const id = uuid();
     const name = String(process.env.REVIEW_NAME || "Google Play Review").trim();
     const address = String(process.env.REVIEW_ADDRESS || "القاهرة، مصر").trim();
     await db.run(
-      "INSERT INTO users (id, phone_number, name, address, user_type, is_active) VALUES (?, ?, ?, ?, 'client', 1)",
-      [id, phone, name, address]
+      "INSERT INTO users (id, phone_number, email, name, address, user_type, is_active) VALUES (?, ?, ?, ?, ?, 'client', 1)",
+      [id, phone, email, name, address]
     );
     user = await db.get("SELECT * FROM users WHERE id = ?", [id]);
-    console.log(`[review] تم إنشاء حساب مراجعة Google Play (${phone})`);
+    console.log(`[review] تم إنشاء حساب مراجعة Google Play (${email || phone})`);
   } else if (!user.is_active) {
     await db.run(
       "UPDATE users SET is_active = 1, deleted_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
       [user.id]
     );
     user = await db.get("SELECT * FROM users WHERE id = ?", [user.id]);
-    console.log(`[review] تم إعادة تفعيل حساب مراجعة Google Play (${phone})`);
+    console.log(`[review] تم إعادة تفعيل حساب مراجعة Google Play (${email || phone})`);
+  } else {
+    // الحساب موجود بالفعل (مثلًا اتعمل قبل ما نضيف REVIEW_EMAIL) — بنكمّل
+    // البيانات الناقصة بس، من غير ما نلمس أي بيانات موجودة.
+    const updates = [];
+    const params = [];
+    if (email && !user.email) {
+      updates.push("email = ?");
+      params.push(email);
+    }
+    if (phone && !user.phone_number) {
+      updates.push("phone_number = ?");
+      params.push(phone);
+    }
+    if (updates.length) {
+      updates.push("updated_at = CURRENT_TIMESTAMP");
+      await db.run(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`, [...params, user.id]);
+      user = await db.get("SELECT * FROM users WHERE id = ?", [user.id]);
+      console.log(`[review] تم تحديث بيانات حساب مراجعة Google Play (${email || phone})`);
+    }
   }
   return user;
 }
@@ -371,13 +410,16 @@ async function requestEmailOtp(req, res, body) {
     return { status: 429, data: { error: "too_many_requests", retry_after: OTP_REQUEST_WINDOW_SECONDS } };
   }
 
-  const code = devOtpCode() || generateOtp();
+  const reviewCode = reviewEmailOtpCode(email);
+  const code = reviewCode || devOtpCode() || generateOtp();
   await otpStore.set(`email_otp:${email}`, code, OTP_TTL_SECONDS);
 
-  try {
-    await sendOtpEmail(email, code);
-  } catch (err) {
-    console.error("[OTP] EMAIL send failed:", err && err.message ? err.message : err);
+  if (!reviewCode) {
+    try {
+      await sendOtpEmail(email, code);
+    } catch (err) {
+      console.error("[OTP] EMAIL send failed:", err && err.message ? err.message : err);
+    }
   }
 
   return { status: 200, data: { message: "OTP sent", expires_in: OTP_TTL_SECONDS } };
