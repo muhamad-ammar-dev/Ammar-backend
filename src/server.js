@@ -207,6 +207,25 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // صفحة حذف الحساب — رابط عام مطلوب في خانة Data safety على Google Play.
+  if (
+    req.method === "GET" &&
+    (url.pathname === "/delete-account" || url.pathname === "/delete-account.html")
+  ) {
+    try {
+      const html = fs.readFileSync(path.join(__dirname, "delete-account.html"), "utf8");
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "public, max-age=3600",
+      });
+      return res.end(html);
+    } catch (err) {
+      console.error("[delete-account] تعذّر قراءة الصفحة:", err.message || err);
+      res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+      return res.end("<h1>Delete account page temporarily unavailable</h1>");
+    }
+  }
+
   const match = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
   if (!match) {
     return sendJson(res, 404, { error: "not_found", path: url.pathname });
