@@ -190,6 +190,23 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  // سياسة الخصوصية كصفحة ويب عامة — مطلوبة كرابط في Google Play Console.
+  // الصفحة دي ثابتة (بدون تسجيل دخول) وبتُقرأ من src/privacy.html.
+  if (req.method === "GET" && (url.pathname === "/privacy" || url.pathname === "/privacy.html")) {
+    try {
+      const html = fs.readFileSync(path.join(__dirname, "privacy.html"), "utf8");
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "public, max-age=3600",
+      });
+      return res.end(html);
+    } catch (err) {
+      console.error("[privacy] تعذّر قراءة صفحة سياسة الخصوصية:", err.message || err);
+      res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+      return res.end("<h1>Privacy policy temporarily unavailable</h1>");
+    }
+  }
+
   const match = routes.find((r) => r.method === req.method && r.pattern.test(url.pathname));
   if (!match) {
     return sendJson(res, 404, { error: "not_found", path: url.pathname });
